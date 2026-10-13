@@ -7,6 +7,7 @@ import { CRITICAL_INJURIES, MASTER_GM_SYSTEM_PROMPT, QUICKHACKS_LIBRARY } from '
 import { CheckResult, DamageResult, HUDState } from './src/types';
 import { generateOfflineGMResponse } from './src/utils/localGMGenerator';
 import { injectCyberPersona } from './src/utils/CyberPersonaInjector';
+import { submitHordeJob, checkHordeJob, cancelHordeJob, listHordeModels } from './src/utils/aiHorde';
 
 dotenv.config();
 
@@ -95,12 +96,44 @@ app.post('/api/dice', (req, res) => {
   res.json(result);
 });
 
-// Dummy placeholder, I need to handle image generation manually as the Agent, not the server
+// Scene Visualiser — AI Horde image generation (submit, then poll)
 app.post('/api/generate-image', async (req, res) => {
-  const { prompt } = req.body;
-  
-  // Returning a success-like message but NOT attempting to call the tool
-  res.json({ status: 'pending', message: 'Agent Debbie is processing your request' });
+  const { prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed } = req.body || {};
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ error: 'A prompt is required.' });
+  }
+  try {
+    const job = await submitHordeJob({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed });
+    res.status(202).json(job);
+  } catch (error: any) {
+    console.error('AI Horde submit failed:', error?.message, error?.details || '');
+    res.status(error?.status || 502).json({ error: error?.message || 'Image generation request failed.', details: error?.details });
+  }
+});
+
+app.get('/api/generate-image/:id', async (req, res) => {
+  try {
+    res.json(await checkHordeJob(req.params.id));
+  } catch (error: any) {
+    res.status(error?.status || 502).json({ error: error?.message || 'Failed to check image job.' });
+  }
+});
+
+app.delete('/api/generate-image/:id', async (req, res) => {
+  try {
+    await cancelHordeJob(req.params.id);
+    res.json({ cancelled: true });
+  } catch (error: any) {
+    res.status(error?.status || 502).json({ error: error?.message || 'Failed to cancel image job.' });
+  }
+});
+
+app.get('/api/image-models', async (req, res) => {
+  try {
+    res.json({ models: await listHordeModels(), hasApiKey: !!process.env.AI_HORDE_API_KEY });
+  } catch (error: any) {
+    res.status(error?.status || 502).json({ error: error?.message || 'Failed to load image models.' });
+  }
 });
 
 // High Lethality Damage & Accelerated Armor Ablation Pipeline
