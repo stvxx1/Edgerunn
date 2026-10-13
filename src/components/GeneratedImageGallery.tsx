@@ -8,10 +8,10 @@ export const GeneratedImageGallery: React.FC<GeneratedImageGalleryProps> = ({ im
   if (images.length === 0) return null;
 
   return (
-    <div className="grid grid-cols-2 gap-2 mt-2">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
       {images.map((img) => (
         <div key={img.id} className="relative rounded-lg overflow-hidden border border-neutral-700">
-          <img src={img.url} alt={img.prompt} className="w-full h-32 object-cover" />
+          <img src={img.url} alt={img.prompt} className="w-full h-auto" />
           <div className="absolute bottom-0 left-0 right-0 p-1 bg-black/70 text-[10px] text-neutral-300 truncate font-mono">
             {img.prompt}
           </div>

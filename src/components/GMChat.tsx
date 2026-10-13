@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Terminal, RefreshCw, Dices, ShieldAlert, Sparkles, UserCheck, Shuffle, Swords, Skull, Flame, Zap, Crosshair, Package, Phone, Radio, AlertTriangle } from 'lucide-react';
+import { Send, Terminal, RefreshCw, Dices, ShieldAlert, Sparkles, UserCheck, Shuffle, Swords, Skull, Flame, Zap, Crosshair, Package, Phone, Radio, AlertTriangle, ImageIcon } from 'lucide-react';
 import { ChatMessage, ChoiceChip, EnemyUnit, HUDState } from '../types';
 import { parseHUDBlock } from '../utils/hudParser';
 import { generateDynamicChoices } from '../utils/choiceGenerator';
 import { SCENE_STARTERS, generateRandomStarterScenario } from '../data/ruleset';
 import { ActionCheckModal } from './ActionCheckModal';
 import { GeneratedImageGallery } from './GeneratedImageGallery';
+import { VisualiseModal } from './VisualiseModal';
 import { buildDynamicSystemPrompt, updateStoredPlotSummary } from '../utils/promptBuilder';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -33,7 +34,8 @@ export const GMChat: React.FC<GMChatProps> = ({
   const [lastHUDUpdateAlert, setLastHUDUpdateAlert] = useState<string | null>(null);
   const [isActionCheckOpen, setIsActionCheckOpen] = useState(false);
   const [selectedCheckChoice, setSelectedCheckChoice] = useState<ChoiceChip | null>(null);
-  const [generatedImages, setGeneratedImages] = useState<{ id: string; url: string; prompt: string }[]>([]);
+  const [generatedImages, setGeneratedImages] = useState<{ id: string; url: string; prompt: string; messageId: string }[]>([]);
+  const [visualiseMsg, setVisualiseMsg] = useState<ChatMessage | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [streamingText, setStreamingText] = useState('');
   
@@ -431,6 +433,14 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
         </div>
       </div>
 
+      <VisualiseModal
+        isOpen={visualiseMsg !== null}
+        sourceText={visualiseMsg?.text || ''}
+        appearance={hudState.customDescription}
+        onClose={() => setVisualiseMsg(null)}
+        onGenerated={img => visualiseMsg && setGeneratedImages(prev => [...prev, { ...img, messageId: visualiseMsg.id }])}
+      />
+
       {/* Main Terminal Window */}
       <div className="flex-1 bg-zinc-950 lg:border border-neutral-800 lg:rounded-lg overflow-hidden flex flex-col shadow-2xl relative w-full max-w-full">
         <div className="bg-neutral-900 border-b border-neutral-800 px-3 lg:px-4 py-2 flex items-center justify-between font-mono text-xs text-neutral-400">
@@ -456,6 +466,17 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
                 }`}>
                 <div className="whitespace-pre-wrap">{renderFormattedText(msg.text)}</div>
               </div>
+              {msg.sender === 'gm' && (
+                <div className="w-full max-w-2xl">
+                  <button
+                    onClick={() => setVisualiseMsg(msg)}
+                    className="mt-1 flex items-center gap-1.5 px-2 py-1 rounded font-mono text-[10px] tracking-wider text-fuchsia-400 hover:text-fuchsia-300 border border-transparent hover:border-fuchsia-500/40"
+                  >
+                    <ImageIcon className="w-3 h-3" /> VISUALISE
+                  </button>
+                  <GeneratedImageGallery images={generatedImages.filter(img => img.messageId === msg.id)} />
+                </div>
+              )}
               {msg.choices && msg.choices.length > 0 && (
                 <div className="flex flex-col w-full gap-2 mt-4 max-w-2xl border-t border-neutral-800 pt-3">
                   <span className="font-mono text-xs text-neutral-500 mb-1">MANDATORY NARRATIVE ACTIONS (CLICK TO ROLL CHECK):</span>
