@@ -1,0 +1,6 @@
+{
+  "name": "Edgerunners Enhanced RPG Game Master",
+  "description": "High-octane AI Game Master Engine & Tactical Suite for Cyberpunk RED featuring Meat-Space Quickhacks, Armor Ablation, persistent character saves, and inventory management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
