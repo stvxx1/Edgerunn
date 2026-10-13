@@ -22,8 +22,11 @@ export interface SceneImageJob {
   error?: string;
 }
 
+export type ImageBackend = 'horde' | 'comfyui';
+
 export interface SceneImageRequest {
   messageId: string;
+  backend?: ImageBackend;
   prompt: string;
   negativePrompt?: string;
   model?: string;

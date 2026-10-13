@@ -8,6 +8,7 @@ import { CheckResult, DamageResult, HUDState } from './src/types';
 import { generateOfflineGMResponse } from './src/utils/localGMGenerator';
 import { injectCyberPersona } from './src/utils/CyberPersonaInjector';
 import { submitHordeJob, checkHordeJob, cancelHordeJob, listHordeModels } from './src/utils/aiHorde';
+import { COMFY_JOB_PREFIX, submitComfyJob, checkComfyJob, cancelComfyJob, listComfyCheckpoints, isComfyAvailable } from './src/utils/comfyui';
 
 dotenv.config();
 
@@ -96,24 +97,27 @@ app.post('/api/dice', (req, res) => {
   res.json(result);
 });
 
-// Scene Visualiser — AI Horde image generation (submit, then poll)
+// Scene Visualiser — image generation via AI Horde or a local ComfyUI (submit, then poll).
+// Job ids carry a prefix for local jobs so polling/cancel route to the right backend.
 app.post('/api/generate-image', async (req, res) => {
-  const { prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed } = req.body || {};
+  const { backend, prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed } = req.body || {};
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return res.status(400).json({ error: 'A prompt is required.' });
   }
   try {
-    const job = await submitHordeJob({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed });
+    const submit = backend === 'comfyui' ? submitComfyJob : submitHordeJob;
+    const job = await submit({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed });
     res.status(202).json(job);
   } catch (error: any) {
-    console.error('AI Horde submit failed:', error?.message, error?.details || '');
+    console.error(`${backend === 'comfyui' ? 'ComfyUI' : 'AI Horde'} submit failed:`, error?.message, error?.details || '');
     res.status(error?.status || 502).json({ error: error?.message || 'Image generation request failed.', details: error?.details });
   }
 });
 
 app.get('/api/generate-image/:id', async (req, res) => {
   try {
-    res.json(await checkHordeJob(req.params.id));
+    const id = req.params.id;
+    res.json(await (id.startsWith(COMFY_JOB_PREFIX) ? checkComfyJob(id) : checkHordeJob(id)));
   } catch (error: any) {
     res.status(error?.status || 502).json({ error: error?.message || 'Failed to check image job.' });
   }
@@ -121,15 +125,24 @@ app.get('/api/generate-image/:id', async (req, res) => {
 
 app.delete('/api/generate-image/:id', async (req, res) => {
   try {
-    await cancelHordeJob(req.params.id);
+    const id = req.params.id;
+    await (id.startsWith(COMFY_JOB_PREFIX) ? cancelComfyJob(id) : cancelHordeJob(id));
     res.json({ cancelled: true });
   } catch (error: any) {
     res.status(error?.status || 502).json({ error: error?.message || 'Failed to cancel image job.' });
   }
 });
 
+app.get('/api/image-backends', async (req, res) => {
+  res.json({ horde: true, comfyui: await isComfyAvailable() });
+});
+
 app.get('/api/image-models', async (req, res) => {
   try {
+    if (req.query.backend === 'comfyui') {
+      const names = await listComfyCheckpoints();
+      return res.json({ models: names.map(name => ({ name, workers: 0, eta: 0 })), hasApiKey: true });
+    }
     res.json({ models: await listHordeModels(), hasApiKey: !!process.env.AI_HORDE_API_KEY });
   } catch (error: any) {
     res.status(error?.status || 502).json({ error: error?.message || 'Failed to load image models.' });

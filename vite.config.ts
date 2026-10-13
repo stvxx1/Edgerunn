@@ -17,6 +17,9 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Let phones reach the dev server by Tailscale name (IPs and localhost are always allowed).
+      // Add other hostnames as a comma-separated ALLOWED_HOSTS env var.
+      allowedHosts: ['.ts.net', ...(process.env.ALLOWED_HOSTS || '').split(',').map(h => h.trim()).filter(Boolean)],
     },
   };
 });
