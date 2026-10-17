@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Terminal, RefreshCw, Dices, ShieldAlert, Sparkles, UserCheck, Shuffle, Swords, Skull, Flame, Zap, Crosshair, Package, Phone, Radio, AlertTriangle } from 'lucide-react';
+import { Send, Terminal, RefreshCw, Dices, ShieldAlert, Sparkles, UserCheck, Shuffle, Swords, Skull, Flame, Zap, Crosshair, Package, Phone, Radio, AlertTriangle, ImageIcon } from 'lucide-react';
 import { ChatMessage, ChoiceChip, EnemyUnit, HUDState } from '../types';
 import { parseHUDBlock } from '../utils/hudParser';
 import { generateDynamicChoices } from '../utils/choiceGenerator';
 import { SCENE_STARTERS, generateRandomStarterScenario } from '../data/ruleset';
 import { ActionCheckModal } from './ActionCheckModal';
 import { GeneratedImageGallery } from './GeneratedImageGallery';
+import { SceneVisualiser } from './SceneVisualiser';
+import { SceneImagesController } from '../utils/useSceneImages';
 import { buildDynamicSystemPrompt, updateStoredPlotSummary } from '../utils/promptBuilder';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -17,6 +19,7 @@ interface GMChatProps {
   onOpenDiceRoller?: () => void;
   onOpenDamagePipeline?: () => void;
   onOpenQuickhackSuite?: () => void;
+  sceneImages: SceneImagesController;
 }
 
 export const GMChat: React.FC<GMChatProps> = ({
@@ -26,14 +29,15 @@ export const GMChat: React.FC<GMChatProps> = ({
   setHudState,
   onOpenDiceRoller,
   onOpenDamagePipeline,
-  onOpenQuickhackSuite
+  onOpenQuickhackSuite,
+  sceneImages
 }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [lastHUDUpdateAlert, setLastHUDUpdateAlert] = useState<string | null>(null);
   const [isActionCheckOpen, setIsActionCheckOpen] = useState(false);
   const [selectedCheckChoice, setSelectedCheckChoice] = useState<ChoiceChip | null>(null);
-  const [generatedImages, setGeneratedImages] = useState<{ id: string; url: string; prompt: string }[]>([]);
+  const [visualiseTarget, setVisualiseTarget] = useState<ChatMessage | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [streamingText, setStreamingText] = useState('');
   
@@ -456,6 +460,21 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
                 }`}>
                 <div className="whitespace-pre-wrap">{renderFormattedText(msg.text)}</div>
               </div>
+              {msg.sender === 'gm' && (
+                <button
+                  onClick={() => setVisualiseTarget(msg)}
+                  className="mt-1 flex items-center gap-1 font-mono text-[10px] text-neutral-600 transition hover:text-fuchsia-400"
+                >
+                  <ImageIcon className="h-3 w-3" /> VISUALISE
+                </button>
+              )}
+              <GeneratedImageGallery
+                images={sceneImages.images.filter(img => img.messageId === msg.id)}
+                jobs={sceneImages.jobs.filter(job => job.messageId === msg.id)}
+                onCancelJob={sceneImages.cancel}
+                onDismissJob={sceneImages.dismissJob}
+                onRemoveImage={sceneImages.removeImage}
+              />
               {msg.choices && msg.choices.length > 0 && (
                 <div className="flex flex-col w-full gap-2 mt-4 max-w-2xl border-t border-neutral-800 pt-3">
                   <span className="font-mono text-xs text-neutral-500 mb-1">MANDATORY NARRATIVE ACTIONS (CLICK TO ROLL CHECK):</span>
@@ -503,6 +522,15 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
           )}
           <div ref={chatEndRef} className="h-4" />
         </div>
+        {visualiseTarget && (
+          <SceneVisualiser
+            messageId={visualiseTarget.id}
+            sceneText={typeof visualiseTarget.text === 'string' ? visualiseTarget.text : String(visualiseTarget.text ?? '')}
+            hudState={hudState}
+            onClose={() => setVisualiseTarget(null)}
+            onGenerate={sceneImages.generate}
+          />
+        )}
 
         {/* Sticky Input Area */}
         <div className="absolute bottom-0 left-0 right-0 bg-zinc-950/90 backdrop-blur-md border-t border-neutral-800 p-3">

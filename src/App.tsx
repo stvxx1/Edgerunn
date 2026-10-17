@@ -11,6 +11,7 @@ import { FactionAndNPCLog } from './components/FactionAndNPCLog';
 import { ChatMessage, HUDState } from './types';
 import { PREMADE_TEMPLATES, DEFAULT_FACTIONS, DEFAULT_CONTACTS, generateRandomStarterScenario } from './data/ruleset';
 import { AlertTriangle, RotateCcw, X } from 'lucide-react';
+import { useSceneImages } from './utils/useSceneImages';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'hud' | 'combat' | 'quickhack' | 'gigs' | 'saves'>('chat');
@@ -74,6 +75,9 @@ export default function App() {
     }
     return defaultState;
   });
+
+  // Lives here so scene images and in-flight Horde jobs survive tab switches.
+  const sceneImages = useSceneImages();
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     const saved = localStorage.getItem('edgerunner_messages');
@@ -241,6 +245,7 @@ export default function App() {
             onOpenDiceRoller={() => setActiveTab('combat')}
             onOpenDamagePipeline={() => setActiveTab('combat')}
             onOpenQuickhackSuite={() => setActiveTab('quickhack')}
+            sceneImages={sceneImages}
           />
         )}
 
