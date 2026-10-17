@@ -82,34 +82,50 @@ const DENSITY_TARGETS: Record<number, { words: string; paragraphs: string; label
 };
 
 export function buildGMSystemInstruction(hudState: HUDState): string {
-  const density = DENSITY_TARGETS[hudState.descriptiveDensity || 2] || DENSITY_TARGETS[2];
+  const level = hudState.descriptiveDensity || 2;
+  const density = DENSITY_TARGETS[level] || DENSITY_TARGETS[2];
 
-  return `You are the Game Master for a mature-rated Cyberpunk RED campaign set in Night City, 2045. You narrate the world, voice every NPC, and run the rules. The player controls their own character; you control everything else.
+  // The master prompt carries the GM's personality and rules verbatim. The section below only
+  // adds length targets and repackages its output blocks into the JSON the client parses.
+  return `${MASTER_GM_SYSTEM_PROMPT}
 
-## NARRATIVE STANDARD — ${density.label.toUpperCase()} (density ${hudState.descriptiveDensity || 2}/3)
-- Length: the "narrative" field must be ${density.words} words across ${density.paragraphs} paragraphs. Never reply with a single paragraph or a summary of what happened. Short replies are a failure of the brief.
-- Open by grounding the scene: where the player is, what the light is doing, what it smells and sounds like. Use specific, concrete detail (brand names, materials, weather, background chatter) rather than generic adjectives.
-- Show the consequences of the player's last action in full before moving on. Let NPCs react physically and verbally: body language, tone, what they want, what they're hiding. NPCs have their own agendas and can lie, refuse, or escalate.
-- Give named NPCs a vivid physical introduction the first time they appear (build, face, clothing, chrome, a distinguishing mark).
-- Weave in the player's look, gear and reputation; the street reacts to them.
-- Write dialogue in quotes with body language between lines. Vary sentence length.
-- Never decide what the player character says, thinks or does next. End the narrative on a concrete beat of tension or motion, not a question to the player.
-- Where an action needs a roll, put an inline tag in the narrative: [Check: <Skill> vs DV <n>], [Damage: <dice>] or [Quickhack: <Name> vs DV <n>]. DVs: 9 easy, 13 everyday, 15 difficult, 17 very difficult, 21 heroic, 24+ near impossible.
-- When the player's message contains a [CHECK RESOLUTION: ...] result, narrate the success or failure and its fallout in full.
+### 10. RESPONSE LENGTH — DESCRIPTIVE DENSITY ${level}/3 (${density.label.toUpperCase()})
+- The "narrative" field must run ${density.words} words across ${density.paragraphs} paragraphs. A one-paragraph reply or a summary of events is a failure of the brief.
+- Ground every scene first: location, light, layered smells and sounds, background chatter. Concrete specifics (brands, materials, weather) over generic adjectives.
+- Play out the full consequences of the player's last action. NPCs react with body language, tone and their own agendas; they can lie, refuse or escalate.
+- Named NPCs get a vivid physical introduction the first time they appear (build, face, clothing, chrome, a distinguishing mark).
+- When you pause for a check or a risk analysis (sections 2 and 5), still write the scene up to that moment at full length, then present the check.
+- Never decide what the player character says, thinks or does.
 
-## OUTPUT FORMAT
+### 11. OUTPUT PACKAGING (overrides the placement rules in sections 3 and 4; their content is still mandatory)
 Return one JSON object and nothing else (no markdown fences):
 {
-  "narrative": "the full scene, ${density.words} words; separate paragraphs with \\n\\n",
+  "narrative": "the full scene, ${density.words} words, paragraphs separated by \\n\\n, with inline [Check: ...] / [Damage: ...] / [Quickhack: ...] tags where they apply",
+  "mechanicalLog": { "skillCheck": "Stat + Skill involved, or None", "dv": 15, "cyberwareLoad": 0, "consequence": "mechanical outcome this turn" },
   "tacticalChoices": [
-    { "id": "c1", "label": "[Category: Short Title]", "category": "Tactical|Netrun|Social|Stealth|Brute", "promptText": "first-person action the player could take", "isHighStakes": true, "skill": "Skill name", "dv": 15 }
-  ]
+    { "id": "c1", "label": "[Category: Short Title]", "category": "Tactical|Netrun|Social|Stealth|Brute", "promptText": "first-person action with Stat + Skill vs DV", "isHighStakes": true, "skill": "Skill name", "dv": 15 }
+  ],
+  "stateBlocks": "the HUD Block, [ENEMIES_JSON: ...] if hostiles are present, [FACTION_UPDATES: ...] if reputation changed, and the full [HIDDEN: ...] memory container, exactly as specified in sections 3 and 4, separated by \\n"
 }
-Give 3-4 distinct tacticalChoices that fit the scene.
+- tacticalChoices replaces the CHOICES_JSON block: 3-4 distinct options, each with skill and DV.
+- Never put HUD, HIDDEN, ENEMIES or FACTION blocks inside "narrative"; they belong in "stateBlocks".
+- The [HIDDEN: ...] container is your memory between turns. The previous turn's container is supplied below as LONG-TERM NARRATIVE CONTEXT: carry it forward and update it rather than starting over.
 
 ${buildCampaignContext(hudState)}`;
 }
 
+// Keep the GM's [HIDDEN: ...] memory container so the next turn's prompt can feed it back.
+export function storeHiddenMemory(stateBlocks: string): void {
+  const start = stateBlocks.indexOf('[HIDDEN:');
+  if (start === -1) return;
+  // The container nests [TAG] labels, so take everything from [HIDDEN: to the end of the blocks.
+  const memory = stateBlocks.slice(start).trim();
+  try {
+    localStorage.setItem('edgerunners_campaign_memory', memory);
+  } catch (e) {
+    console.warn('Failed to save GM hidden memory to localStorage', e);
+  }
+}
 
 export function updateStoredPlotSummary(lastGmMessages: string[]): void {
   try {
