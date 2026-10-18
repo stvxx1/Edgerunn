@@ -1,5 +1,5 @@
 import { HUDState } from '../types';
-import { MASTER_GM_SYSTEM_PROMPT } from '../data/ruleset';
+import { CYBERWARE_SHOP, MASTER_GM_SYSTEM_PROMPT } from '../data/ruleset';
 
 export function buildCampaignContext(hudState: HUDState): string {
   // Read plot summary & campaign memory from localStorage
@@ -34,6 +34,14 @@ export function buildCampaignContext(hudState: HUDState): string {
   // Format inventory items
   const inventoryFormatted = (hudState.inventory || []).join(', ') || 'Standard Gear';
 
+  // Installed chrome only appears in inventory by name; give the GM each piece's actual rules.
+  const installedCyberware = CYBERWARE_SHOP.filter(c =>
+    (hudState.inventory || []).some(item => item.toLowerCase().includes(c.name.toLowerCase()))
+  );
+  const cyberwareFormatted = installedCyberware.length > 0
+    ? installedCyberware.map(c => `  * ${c.name} [${c.category}]: ${c.description}`).join('\n')
+    : '  * None beyond what the inventory lists';
+
   // Format critical injuries
   const criticalInjuriesFormatted = (hudState.criticalInjuries || []).length > 0 
     ? hudState.criticalInjuries.join(', ') 
@@ -53,6 +61,8 @@ CHARACTER CORE PROFILE:
 - STATS BLOCK: ${statsFormatted}
 - CURRENT INVENTORY: ${inventoryFormatted}
 - ACTIVE CRITICAL INJURIES: ${criticalInjuriesFormatted}
+- INSTALLED CYBERWARE RULES (apply these exactly when the player uses them):
+${cyberwareFormatted}
 - CUSTOM DESCRIPTION & SIGNATURE LOOK: ${hudState.customDescription || 'Street runner aesthetic with custom chrome and combat gear.'}
 
 - FACTION STANDINGS & REPUTATION: ${factionsFormatted}
