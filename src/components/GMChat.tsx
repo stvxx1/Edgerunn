@@ -566,7 +566,7 @@ export const GMChat: React.FC<GMChatProps> = ({
               onChange={(e) => setInput(e.target.value)}
               placeholder="Execute command or action..."
               disabled={loading}
-              className="flex-1 bg-neutral-900/50 border border-cyan-900/50 focus:border-cyan-400 rounded px-4 py-3 font-mono text-sm text-cyan-100 placeholder-cyan-900/50 outline-none transition"
+              className="flex-1 min-w-0 bg-neutral-900/50 border border-cyan-900/50 focus:border-cyan-400 rounded px-3 sm:px-4 py-3 font-mono text-sm text-cyan-100 placeholder-cyan-900/50 outline-none transition"
             />
             <button
               type="button"
@@ -584,17 +584,20 @@ export const GMChat: React.FC<GMChatProps> = ({
                 setIsActionCheckOpen(true);
               }}
               disabled={loading || !input.trim()}
-              className="px-4 py-3 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/50 disabled:opacity-50 text-yellow-400 font-mono font-bold text-xs rounded flex items-center gap-1.5 transition cursor-pointer"
+              aria-label="Check and roll"
+              className="shrink-0 px-3 sm:px-4 py-3 bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/50 disabled:opacity-50 text-yellow-400 font-mono font-bold text-xs rounded flex items-center gap-1.5 transition cursor-pointer"
             >
-              <Dices className="w-3.5 h-3.5 text-yellow-400" />
-              CHECK & ROLL
+              <Dices className="w-4 h-4 sm:w-3.5 sm:h-3.5 text-yellow-400" />
+              <span className="hidden sm:inline">CHECK & ROLL</span>
             </button>
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="px-6 py-3 bg-cyan-600/20 hover:bg-cyan-500/30 border border-cyan-500/50 disabled:opacity-50 text-cyan-400 font-mono font-bold text-sm rounded flex items-center gap-2 transition"
+              aria-label="Execute"
+              className="shrink-0 px-3 sm:px-6 py-3 bg-cyan-600/20 hover:bg-cyan-500/30 border border-cyan-500/50 disabled:opacity-50 text-cyan-400 font-mono font-bold text-sm rounded flex items-center gap-2 transition"
             >
-              EXECUTE
+              <Send className="w-4 h-4 sm:hidden" />
+              <span className="hidden sm:inline">EXECUTE</span>
             </button>
           </form>
         </div>
