@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Shield, Heart, Zap, Flame, DollarSign, Plus, Trash2, AlertTriangle, Activity, Edit3, Package, Check, Sparkles } from 'lucide-react';
 import { motion } from 'motion/react';
 import { HUDState, WoundState } from '../types';
+import { SkillSheet } from './SkillSheet';
 
 interface CharacterHUDProps {
   hudState: HUDState;
@@ -478,6 +479,8 @@ export const CharacterHUD: React.FC<CharacterHUDProps> = ({ hudState, setHudStat
           ))}
         </div>
       </div>
+
+      <SkillSheet hudState={hudState} setHudState={setHudState} />
 
       {/* Status Effects & Critical Injuries Columns */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

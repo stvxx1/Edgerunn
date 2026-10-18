@@ -85,6 +85,7 @@ export interface HUDState {
   activeChoices?: ChoiceChip[];
   activeEnemies?: EnemyUnit[];
   descriptiveDensity: number; // 1-3
+  skills?: Record<string, number>; // skill name -> rank; older saves lack it (see getSkills)
 }
 
 export interface LifepathDetails {
@@ -140,6 +141,9 @@ export interface ChatMessage {
   timestamp: string;
   hudUpdate?: Partial<HUDState>;
   choices?: ChoiceChip[];
+  // State from just before this GM reply, so regenerate/undo can roll it back
+  hudBefore?: HUDState;
+  memoryBefore?: string | null;
 }
 
 export interface CheckResult {

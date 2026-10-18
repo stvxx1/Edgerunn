@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Save, FolderOpen, Trash2 } from 'lucide-react';
 import { HUDState, ChatMessage } from '../types';
-import { getCampaignMemory, resetCampaignMemory } from '../utils/promptBuilder';
+import { getCampaignMemory, getStorySnapshot, resetCampaignMemory } from '../utils/promptBuilder';
 
 interface SaveManagerProps {
   hudState: HUDState;
@@ -22,7 +22,7 @@ export const SaveManager: React.FC<SaveManagerProps> = ({ hudState, messages, on
   const saveGame = () => {
     if (!saveName) return;
     const saveKey = `save_${saveName}`;
-    localStorage.setItem(saveKey, JSON.stringify({ hudState, messages, campaignMemory: getCampaignMemory() }));
+    localStorage.setItem(saveKey, JSON.stringify({ hudState, messages, campaignMemory: getCampaignMemory(), story: getStorySnapshot() }));
     
     const newSaves = Array.from(new Set([...saves, saveName]));
     setSaves(newSaves);
@@ -34,8 +34,9 @@ export const SaveManager: React.FC<SaveManagerProps> = ({ hudState, messages, on
     const data = localStorage.getItem(`save_${name}`);
     if (data) {
       const parsed = JSON.parse(data);
-      // Older saves have no campaignMemory; that clears the current campaign's rather than leaking it.
-      resetCampaignMemory(parsed.campaignMemory, (parsed.messages || []).filter((m: ChatMessage) => m.sender === 'gm').map((m: ChatMessage) => m.text));
+      // Older saves lack memory/story; that clears the current campaign's rather than leaking it,
+      // and the summariser rebuilds the story from the loaded messages over the next few turns.
+      resetCampaignMemory(parsed.campaignMemory, parsed.story);
       onLoad(parsed.hudState, parsed.messages);
     }
   };

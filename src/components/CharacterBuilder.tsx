@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { User, Dices, ShoppingBag, Shield, CheckCircle, Sparkles, Cpu } from 'lucide-react';
 import { HUDState, CharacterStats, LifepathDetails } from '../types';
 import { CYBERWARE_SHOP, GEAR_SHOP, LIFEPATH_TABLES, PREMADE_TEMPLATES } from '../data/ruleset';
+import { buildDefaultSkills } from '../data/skills';
 
 interface CharacterBuilderProps {
   hudState: HUDState;
@@ -54,7 +55,9 @@ export const CharacterBuilder: React.FC<CharacterBuilderProps> = ({ hudState, se
       'Agent Pocket Comms'
     ];
 
-    setHudState({
+    // Merge so factions, contacts and density from the new-run reset aren't wiped
+    setHudState(prev => ({
+      ...prev,
       name: template.name,
       role: template.role,
       roleRank: template.roleRank,
@@ -75,8 +78,9 @@ export const CharacterBuilder: React.FC<CharacterBuilderProps> = ({ hudState, se
       criticalInjuries: [],
       stats: template.stats,
       inventory: initialInventory,
-      customDescription: template.lifepathSummary
-    });
+      customDescription: template.lifepathSummary,
+      skills: buildDefaultSkills(template.role)
+    }));
 
     onComplete();
   };
@@ -125,7 +129,8 @@ export const CharacterBuilder: React.FC<CharacterBuilderProps> = ({ hudState, se
       'Agent Pocket Comms'
     ];
 
-    setHudState({
+    setHudState(prev => ({
+      ...prev,
       name: charName || 'Edgerunner',
       role: charRole,
       roleRank: charRank,
@@ -146,8 +151,9 @@ export const CharacterBuilder: React.FC<CharacterBuilderProps> = ({ hudState, se
       criticalInjuries: [],
       stats,
       inventory: initialInventory,
-      customDescription: customDescription.trim() || `Street-hardened ${charRole} carving a path through the neon underbelly of Night City.`
-    });
+      customDescription: customDescription.trim() || `Street-hardened ${charRole} carving a path through the neon underbelly of Night City.`,
+      skills: buildDefaultSkills(charRole)
+    }));
 
     onComplete();
   };

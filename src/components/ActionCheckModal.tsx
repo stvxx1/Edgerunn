@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Dices, AlertTriangle, ShieldAlert, Sparkles, X, Flame, Zap, Crosshair, CheckCircle2, XCircle } from 'lucide-react';
 import { HUDState, ChoiceChip, CheckResult } from '../types';
+import { SKILL_LIST, findSkill, getSkills } from '../data/skills';
 
 interface ActionCheckModalProps {
   isOpen: boolean;
@@ -26,25 +27,28 @@ export const ActionCheckModal: React.FC<ActionCheckModalProps> = ({
   const [rollResult, setRollResult] = useState<CheckResult | null>(null);
   const [isRolling, setIsRolling] = useState<boolean>(false);
 
+  // Pick a skill: use its RED name, linked STAT and the character's rank from the skill sheet
+  const applySkill = (name: string) => {
+    const def = findSkill(name);
+    if (!def) {
+      setSkillName(name);
+      return;
+    }
+    setSkillName(def.name);
+    setSelectedStat(def.stat);
+    setSkillVal(getSkills(hudState)[def.name] ?? 0);
+  };
+
   useEffect(() => {
     setRollResult(null);
     if (initialChoice) {
-      if (initialChoice.dv) setTargetDV(initialChoice.dv);
-      else setTargetDV(15);
-      if (initialChoice.skill) setSkillName(initialChoice.skill);
-      if (initialChoice.category === 'Netrun') {
-        setSelectedStat('INT');
-        setSkillName(initialChoice.skill || 'Interface');
-      } else if (initialChoice.category === 'Social') {
-        setSelectedStat('COOL');
-        setSkillName(initialChoice.skill || 'Persuasion');
-      } else if (initialChoice.category === 'Stealth') {
-        setSelectedStat('DEX');
-        setSkillName(initialChoice.skill || 'Stealth');
-      } else if (initialChoice.category === 'Brute' || initialChoice.category === 'Tactical') {
-        setSelectedStat('REF');
-        setSkillName(initialChoice.skill || 'Handgun');
-      }
+      setTargetDV(initialChoice.dv || 15);
+      const fallback =
+        initialChoice.category === 'Netrun' ? 'Interface'
+        : initialChoice.category === 'Social' ? 'Persuasion'
+        : initialChoice.category === 'Stealth' ? 'Stealth'
+        : 'Handgun';
+      applySkill(initialChoice.skill || fallback);
     }
   }, [initialChoice, isOpen]);
 
@@ -177,10 +181,20 @@ export const ActionCheckModal: React.FC<ActionCheckModalProps> = ({
             <label className="text-neutral-400 block mb-1">Skill Name:</label>
             <input
               type="text"
+              list="action-check-skills"
               value={skillName}
-              onChange={(e) => setSkillName(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                // Picking from the list (an exact skill name) fills in STAT and rank
+                if (SKILL_LIST.some(s => s.name === value)) applySkill(value);
+                else setSkillName(value);
+              }}
+              onBlur={(e) => applySkill(e.target.value)}
               className="w-full bg-neutral-900 border border-neutral-700 px-2.5 py-1.5 rounded text-neutral-100 font-bold"
             />
+            <datalist id="action-check-skills">
+              {SKILL_LIST.map(s => <option key={s.name} value={s.name}>{`${s.stat} · rank ${getSkills(hudState)[s.name] ?? 0}`}</option>)}
+            </datalist>
           </div>
           <div>
             <label className="text-neutral-400 block mb-1">Skill Bonus (+):</label>

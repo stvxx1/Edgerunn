@@ -1,14 +1,15 @@
 import { HUDState } from '../types';
 import { CYBERWARE_SHOP, MASTER_GM_SYSTEM_PROMPT } from '../data/ruleset';
+import { SKILL_LIST, getSkills } from '../data/skills';
 
 export function buildCampaignContext(hudState: HUDState): string {
   // Read plot summary & campaign memory from localStorage
-  let plotSummary = 'No prior plot history logged yet. The campaign is actively unfolding in Night City, 2045.';
+  let storySummary = 'The campaign has just begun; nothing older than the turns below has happened yet.';
   let campaignMemory = 'Night City 2045. High tech, low life.';
 
   try {
-    const storedSummary = localStorage.getItem('edgerunners_plot_summary');
-    if (storedSummary) plotSummary = storedSummary;
+    const storedSummary = localStorage.getItem(STORY_KEY);
+    if (storedSummary) storySummary = storedSummary;
 
     const storedMemory = localStorage.getItem('edgerunners_campaign_memory');
     if (storedMemory) campaignMemory = storedMemory;
@@ -42,6 +43,14 @@ export function buildCampaignContext(hudState: HUDState): string {
     ? installedCyberware.map(c => `  * ${c.name} [${c.category}]: ${c.description}`).join('\n')
     : '  * None beyond what the inventory lists';
 
+  // Trained skills with their check base (STAT + rank), so suggested checks use real skill names
+  const skillRanks = getSkills(hudState);
+  const skillsFormatted = SKILL_LIST
+    .filter(s => (skillRanks[s.name] || 0) > 0)
+    .sort((a, b) => (skillRanks[b.name] || 0) - (skillRanks[a.name] || 0))
+    .map(s => `${s.name} ${skillRanks[s.name]} (${s.stat}, base ${skillRanks[s.name] + (hudState.stats?.[s.stat] || 0)})`)
+    .join(' | ') || 'Untrained';
+
   // Format critical injuries
   const criticalInjuriesFormatted = (hudState.criticalInjuries || []).length > 0 
     ? hudState.criticalInjuries.join(', ') 
@@ -59,6 +68,7 @@ CHARACTER CORE PROFILE:
 - Street Cred: Level ${hudState.streetCred} | Heat Level: ${hudState.heat} | Cash: ${hudState.cash}eb
 
 - STATS BLOCK: ${statsFormatted}
+- SKILLS (rank, linked STAT, check base = STAT + rank; use these exact skill names in checks and tacticalChoices): ${skillsFormatted}
 - CURRENT INVENTORY: ${inventoryFormatted}
 - ACTIVE CRITICAL INJURIES: ${criticalInjuriesFormatted}
 - INSTALLED CYBERWARE RULES (apply these exactly when the player uses them):
@@ -68,8 +78,8 @@ ${cyberwareFormatted}
 - FACTION STANDINGS & REPUTATION: ${factionsFormatted}
 - KNOWN CONTACTS & FIXERS: ${contactsFormatted}
 
-LOCAL CAMPAIGN PLOT SUMMARY (STORED MEMORY):
-${plotSummary}
+STORY SO FAR (summary of older events; the most recent turns follow as conversation history):
+${storySummary}
 
 LONG-TERM NARRATIVE CONTEXT:
 ${campaignMemory}
@@ -127,7 +137,17 @@ ${buildCampaignContext(hudState)}`;
 
 // Keep the GM's [HIDDEN: ...] memory container so the next turn's prompt can feed it back.
 const MEMORY_KEY = 'edgerunners_campaign_memory';
-const PLOT_KEY = 'edgerunners_plot_summary';
+const STORY_KEY = 'edgerunners_story_summary';
+const STORY_POINTER_KEY = 'edgerunners_story_summary_upto';
+
+// Turns sent verbatim each request; older ones are folded into the story summary in batches
+export const RECENT_MESSAGES = 12;
+const SUMMARY_BATCH = 8;
+
+export interface StorySnapshot {
+  summary: string | null;
+  upTo: string | null; // id of the last message the summary covers
+}
 
 // The GM's memory belongs to one campaign: wipe it on a new run, swap it when loading a save.
 export function getCampaignMemory(): string | null {
@@ -138,15 +158,63 @@ export function getCampaignMemory(): string | null {
   }
 }
 
-export function resetCampaignMemory(memory?: string | null, messages: string[] = []): void {
+export function getStorySnapshot(): StorySnapshot {
+  try {
+    return { summary: localStorage.getItem(STORY_KEY), upTo: localStorage.getItem(STORY_POINTER_KEY) };
+  } catch {
+    return { summary: null, upTo: null };
+  }
+}
+
+export function setStorySnapshot(story: StorySnapshot): void {
+  try {
+    if (story.summary && story.upTo) {
+      localStorage.setItem(STORY_KEY, story.summary);
+      localStorage.setItem(STORY_POINTER_KEY, story.upTo);
+    } else {
+      localStorage.removeItem(STORY_KEY);
+      localStorage.removeItem(STORY_POINTER_KEY);
+    }
+  } catch (e) {
+    console.warn('Failed to store story summary', e);
+  }
+}
+
+export function resetCampaignMemory(memory?: string | null, story?: StorySnapshot): void {
   try {
     if (memory) localStorage.setItem(MEMORY_KEY, memory);
     else localStorage.removeItem(MEMORY_KEY);
-    localStorage.removeItem(PLOT_KEY);
+    localStorage.removeItem('edgerunners_plot_summary'); // superseded by the story summary
   } catch (e) {
     console.warn('Failed to reset campaign memory', e);
   }
-  if (messages.length) updateStoredPlotSummary(messages);
+  setStorySnapshot(story ?? { summary: null, upTo: null });
+}
+
+// Messages not yet covered by the story summary: these are sent to the GM verbatim.
+export function unsummarizedMessages<T extends { id: string }>(messages: T[]): T[] {
+  const { upTo } = getStorySnapshot();
+  const idx = upTo ? messages.findIndex(m => m.id === upTo) : -1;
+  return idx === -1 ? messages : messages.slice(idx + 1);
+}
+
+// Older turns ready to fold into the summary, once enough have piled up beyond the recent window
+export function messagesToSummarize<T extends { id: string; sender: string }>(messages: T[]): T[] {
+  const pending = unsummarizedMessages(messages);
+  const older = pending.slice(0, Math.max(0, pending.length - RECENT_MESSAGES));
+  // Cap each pass so a long campaign from an older save catches up over a few turns
+  const batch = older.slice(0, 40);
+  return batch.filter(m => m.sender === 'user' || m.sender === 'gm').length >= SUMMARY_BATCH ? batch : [];
+}
+
+// Put the GM memory back exactly as it was (null = no memory yet), for regenerate/undo
+export function restoreCampaignMemory(memory: string | null): void {
+  try {
+    if (memory) localStorage.setItem(MEMORY_KEY, memory);
+    else localStorage.removeItem(MEMORY_KEY);
+  } catch (e) {
+    console.warn('Failed to restore campaign memory', e);
+  }
 }
 
 export function storeHiddenMemory(stateBlocks: string): void {
@@ -158,14 +226,5 @@ export function storeHiddenMemory(stateBlocks: string): void {
     localStorage.setItem('edgerunners_campaign_memory', memory);
   } catch (e) {
     console.warn('Failed to save GM hidden memory to localStorage', e);
-  }
-}
-
-export function updateStoredPlotSummary(lastGmMessages: string[]): void {
-  try {
-    const recentNarrative = lastGmMessages.slice(-5).join('\n---\n');
-    localStorage.setItem('edgerunners_plot_summary', recentNarrative);
-  } catch (e) {
-    console.warn('Failed to save plot summary to localStorage', e);
   }
 }
