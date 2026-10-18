@@ -63,7 +63,7 @@ CHARACTER CORE PROFILE:
 - ACTIVE CRITICAL INJURIES: ${criticalInjuriesFormatted}
 - INSTALLED CYBERWARE RULES (apply these exactly when the player uses them):
 ${cyberwareFormatted}
-- CUSTOM DESCRIPTION & SIGNATURE LOOK: ${hudState.customDescription || 'Street runner aesthetic with custom chrome and combat gear.'}
+- CUSTOM DESCRIPTION, LOOK & BACKSTORY (history and appearance only, NOT the current location): ${hudState.customDescription || 'Street runner aesthetic with custom chrome and combat gear.'}
 
 - FACTION STANDINGS & REPUTATION: ${factionsFormatted}
 - KNOWN CONTACTS & FIXERS: ${contactsFormatted}
@@ -106,6 +106,7 @@ export function buildGMSystemInstruction(hudState: HUDState): string {
 - Named NPCs get a vivid physical introduction the first time they appear (build, face, clothing, chrome, a distinguishing mark).
 - When you pause for a check or a risk analysis (sections 2 and 5), still write the scene up to that moment at full length, then present the check.
 - Never decide what the player character says, thinks or does.
+- Continuity: pick up exactly where the most recent GM message left off: same location, NPCs and situation, unless the player's action moves the scene. Backstory and lifepath details are history, never a reason to relocate the scene.
 
 ### 11. OUTPUT PACKAGING (overrides the placement rules in sections 3 and 4; their content is still mandatory)
 Return one JSON object and nothing else (no markdown fences):
@@ -125,6 +126,29 @@ ${buildCampaignContext(hudState)}`;
 }
 
 // Keep the GM's [HIDDEN: ...] memory container so the next turn's prompt can feed it back.
+const MEMORY_KEY = 'edgerunners_campaign_memory';
+const PLOT_KEY = 'edgerunners_plot_summary';
+
+// The GM's memory belongs to one campaign: wipe it on a new run, swap it when loading a save.
+export function getCampaignMemory(): string | null {
+  try {
+    return localStorage.getItem(MEMORY_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function resetCampaignMemory(memory?: string | null, messages: string[] = []): void {
+  try {
+    if (memory) localStorage.setItem(MEMORY_KEY, memory);
+    else localStorage.removeItem(MEMORY_KEY);
+    localStorage.removeItem(PLOT_KEY);
+  } catch (e) {
+    console.warn('Failed to reset campaign memory', e);
+  }
+  if (messages.length) updateStoredPlotSummary(messages);
+}
+
 export function storeHiddenMemory(stateBlocks: string): void {
   const start = stateBlocks.indexOf('[HIDDEN:');
   if (start === -1) return;

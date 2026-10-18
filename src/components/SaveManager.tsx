@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Save, FolderOpen, Trash2 } from 'lucide-react';
 import { HUDState, ChatMessage } from '../types';
+import { getCampaignMemory, resetCampaignMemory } from '../utils/promptBuilder';
 
 interface SaveManagerProps {
   hudState: HUDState;
@@ -11,13 +12,17 @@ interface SaveManagerProps {
 export const SaveManager: React.FC<SaveManagerProps> = ({ hudState, messages, onLoad }) => {
   const [saveName, setSaveName] = useState('');
   const [saves, setSaves] = useState<string[]>(() => {
-    return JSON.parse(localStorage.getItem('edgerunner_saves') || '[]');
+    try {
+      return JSON.parse(localStorage.getItem('edgerunner_saves') || '[]');
+    } catch {
+      return [];
+    }
   });
 
   const saveGame = () => {
     if (!saveName) return;
     const saveKey = `save_${saveName}`;
-    localStorage.setItem(saveKey, JSON.stringify({ hudState, messages }));
+    localStorage.setItem(saveKey, JSON.stringify({ hudState, messages, campaignMemory: getCampaignMemory() }));
     
     const newSaves = Array.from(new Set([...saves, saveName]));
     setSaves(newSaves);
@@ -29,6 +34,8 @@ export const SaveManager: React.FC<SaveManagerProps> = ({ hudState, messages, on
     const data = localStorage.getItem(`save_${name}`);
     if (data) {
       const parsed = JSON.parse(data);
+      // Older saves have no campaignMemory; that clears the current campaign's rather than leaking it.
+      resetCampaignMemory(parsed.campaignMemory, (parsed.messages || []).filter((m: ChatMessage) => m.sender === 'gm').map((m: ChatMessage) => m.text));
       onLoad(parsed.hudState, parsed.messages);
     }
   };

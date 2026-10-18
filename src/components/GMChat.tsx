@@ -22,6 +22,35 @@ interface GMChatProps {
   sceneImages: SceneImagesController;
 }
 
+// The GM streams a JSON object; show only the "narrative" string as it arrives, unescaped.
+// Falls back to the raw text for the offline GM, which streams plain prose.
+const previewNarrative = (raw: string): string => {
+  const start = raw.match(/"narrative"\s*:\s*"/);
+  if (!start) return raw.trimStart().startsWith('{') || raw.trimStart().startsWith('`') ? '' : raw;
+  const body = raw.slice((start.index ?? 0) + start[0].length);
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"') break;
+    if (c !== '\\') {
+      out += c;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next === undefined) break;
+    if (next === 'u') {
+      const hex = body.slice(i + 2, i + 6);
+      if (hex.length < 4) break;
+      out += String.fromCharCode(parseInt(hex, 16));
+      i += 5;
+      continue;
+    }
+    out += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+    i++;
+  }
+  return out;
+};
+
 export const GMChat: React.FC<GMChatProps> = ({
   messages,
   setMessages,
@@ -129,7 +158,7 @@ export const GMChat: React.FC<GMChatProps> = ({
                 const parsed = JSON.parse(dataStr);
                 if (parsed.text) {
                   fullResponse += parsed.text;
-                  setStreamingText(fullResponse);
+                  setStreamingText(previewNarrative(fullResponse));
                 } else if (parsed.info) {
                   console.info('GM Engine Notification:', parsed.info);
                   // Optionally add a temporary UI notification here if a toast library exists

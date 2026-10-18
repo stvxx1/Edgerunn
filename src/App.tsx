@@ -12,6 +12,7 @@ import { ChatMessage, HUDState } from './types';
 import { PREMADE_TEMPLATES, DEFAULT_FACTIONS, DEFAULT_CONTACTS, generateRandomStarterScenario } from './data/ruleset';
 import { AlertTriangle, RotateCcw, X } from 'lucide-react';
 import { useSceneImages } from './utils/useSceneImages';
+import { resetCampaignMemory } from './utils/promptBuilder';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'hud' | 'combat' | 'quickhack' | 'gigs' | 'saves'>('chat');
@@ -134,6 +135,7 @@ export default function App() {
     // Clear storage for active run
     localStorage.removeItem('edgerunner_hud');
     localStorage.removeItem('edgerunner_messages');
+    resetCampaignMemory();
     
     // Reset active messages
     setMessages([{

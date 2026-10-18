@@ -72,7 +72,7 @@ export function parseHUDBlock(text: string, currentHUD: HUDState): { cleanText: 
     }
 
     // 4. Regex matching standard HUD block pattern
-    const hudRegex = /\[\s*Name:\s*([^|]+)\|\s*Role:\s*([^(]+)\(Rank\s*(\d+)\)\s*\]\s*\n?\[\s*HP:\s*(\d+)\/(\d+)\s*\|\s*Wound State:\s*([^\]]+)\]\s*\n?\[\s*Armor SP:\s*Head\s*(\d+)\/(\d+)\s*\|\s*Body\s*(\d+)\/(\d+)\s*\]\s*\n?\[\s*Humanity:\s*(\d+)\/(\d+)\s*\(EMP:\s*(\d+)\)\s*\|\s*Street Cred:\s*Level\s*(\d+)\s*\|\s*Heat:\s*Level\s*(\d+)\s*\]\s*\n?\[\s*Cash:\s*(\d+)eb\s*\|\s*Active Status Effects:\s*([^\]]+)\]/i;
+    const hudRegex = /\[\s*Name:\s*([^|]+)\|\s*Role:\s*([^(]+)\(Rank\s*(\d+)\)\s*\]\s*\n?\[\s*HP:\s*(\d+)\/(\d+)\s*\|\s*Wound State:\s*([^\]]+)\]\s*\n?\[\s*Armor SP:\s*Head\s*(\d+)\/(\d+)\s*\|\s*Body\s*(\d+)\/(\d+)\s*\]\s*\n?\[\s*Humanity:\s*(\d+)\/(\d+)\s*\(EMP:\s*(\d+)\)\s*\|\s*Street Cred:\s*Level\s*(\d+)\s*\|\s*Heat:\s*Level\s*(\d+)\s*\]\s*\n?\[\s*Cash:\s*([\d,]+)\s*eb\s*\|\s*Active Status Effects:\s*([^\]]+)\]/i;
 
     const match = text.match(hudRegex);
     if (match) {
@@ -100,7 +100,7 @@ export function parseHUDBlock(text: string, currentHUD: HUDState): { cleanText: 
 
       updated.streetCred = parseInt(streetCred, 10);
       updated.heat = parseInt(heat, 10);
-      updated.cash = parseInt(cash, 10);
+      updated.cash = parseInt(cash.replace(/,/g, ''), 10);
 
       const effects = statusEffects.trim();
       if (effects && effects.toLowerCase() !== 'none') {
