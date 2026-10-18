@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Terminal, RefreshCw, Dices, ShieldAlert, Sparkles, UserCheck, Shuffle, Swords, Skull, Flame, Zap, Crosshair, Package, Phone, Radio, AlertTriangle, ImageIcon } from 'lucide-react';
+import { Send, Terminal, RefreshCw, Dices, ShieldAlert, Sparkles, UserCheck, Shuffle, Swords, Skull, Flame, Zap, Crosshair, Package, Phone, Radio, AlertTriangle, ImageIcon, Pencil, Undo2, Check } from 'lucide-react';
 import { ChatMessage, ChoiceChip, EnemyUnit, HUDState } from '../types';
 import { parseHUDBlock } from '../utils/hudParser';
 import { generateDynamicChoices } from '../utils/choiceGenerator';
@@ -8,7 +8,7 @@ import { ActionCheckModal } from './ActionCheckModal';
 import { GeneratedImageGallery } from './GeneratedImageGallery';
 import { SceneVisualiser } from './SceneVisualiser';
 import { SceneImagesController } from '../utils/useSceneImages';
-import { buildGMSystemInstruction, storeHiddenMemory, updateStoredPlotSummary } from '../utils/promptBuilder';
+import { buildGMSystemInstruction, getCampaignMemory, getStorySnapshot, messagesToSummarize, restoreCampaignMemory, setStorySnapshot, storeHiddenMemory, unsummarizedMessages } from '../utils/promptBuilder';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface GMChatProps {
@@ -109,7 +109,37 @@ export const GMChat: React.FC<GMChatProps> = ({
 
   const isCallingApiRef = useRef(false);
 
-  const streamGMResponse = async (historyToUse: ChatMessage[], promptText: string) => {
+  // Fold turns that have scrolled out of the recent window into the story summary, in the
+  // background. On failure nothing advances, so those turns just keep being sent verbatim.
+  const summarizingRef = useRef(false);
+  const foldOlderTurnsIntoSummary = async (all: ChatMessage[]) => {
+    const batch = messagesToSummarize(all);
+    if (batch.length === 0 || summarizingRef.current) return;
+    summarizingRef.current = true;
+    try {
+      const res = await fetch('/api/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          previousSummary: getStorySnapshot().summary || '',
+          messages: batch.map(m => ({ sender: m.sender, text: m.text }))
+        })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.summary) setStorySnapshot({ summary: body.summary, upTo: batch[batch.length - 1].id });
+      else console.warn('Story summary not updated:', body.error || res.status);
+    } catch (e) {
+      console.warn('Story summary request failed', e);
+    } finally {
+      summarizingRef.current = false;
+    }
+  };
+
+  // hudOverride: regenerate/undo restore an earlier HUD before re-asking, and state updates aren't
+  // visible to this closure until the next render.
+  const streamGMResponse = async (historyToUse: ChatMessage[], promptText: string, hudOverride?: HUDState) => {
+    const hud = hudOverride ?? hudState;
+    const memoryBefore = getCampaignMemory();
     if (isCallingApiRef.current) return;
     isCallingApiRef.current = true;
     setLoading(true);
@@ -124,9 +154,10 @@ export const GMChat: React.FC<GMChatProps> = ({
         },
         body: JSON.stringify({
           message: promptText,
-          history: historyToUse.map(m => ({ sender: m.sender, text: m.text })),
-          currentHUD: hudState,
-          systemInstruction: buildGMSystemInstruction(hudState)
+          // Older turns live in the story summary (in the system prompt); send only the rest verbatim
+          history: unsummarizedMessages(historyToUse).map(m => ({ sender: m.sender, text: m.text })),
+          currentHUD: hud,
+          systemInstruction: buildGMSystemInstruction(hud)
         })
       });
 
@@ -196,7 +227,7 @@ export const GMChat: React.FC<GMChatProps> = ({
       }
 
       // Blocks belong inside stateBlocks; still honour any the model printed outside the JSON.
-      const { updatedHUD: strayHUD } = parseHUDBlock(fullResponse.replace(jsonSpan, ''), hudState);
+      const { updatedHUD: strayHUD } = parseHUDBlock(fullResponse.replace(jsonSpan, ''), hud);
 
       // HUD / enemy / faction / hidden-memory blocks arrive JSON-escaped inside stateBlocks;
       // parse them once they're plain text again.
@@ -227,7 +258,7 @@ export const GMChat: React.FC<GMChatProps> = ({
         ];
       }
       
-      if (JSON.stringify(updatedHUD) !== JSON.stringify(hudState)) {
+      if (JSON.stringify(updatedHUD) !== JSON.stringify(hud)) {
         setHudState(updatedHUD);
         setLastHUDUpdateAlert(`HUD Synced: HP ${updatedHUD.hpCurrent}/${updatedHUD.hpMax} | Head SP ${updatedHUD.spHeadCurrent} | Body SP ${updatedHUD.spBodyCurrent}`);
         setTimeout(() => setLastHUDUpdateAlert(null), 4000);
@@ -239,12 +270,22 @@ export const GMChat: React.FC<GMChatProps> = ({
         text: finalCleanText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         hudUpdate: updatedHUD,
-        choices: parsedChoices
+        choices: parsedChoices,
+        hudBefore: hud,
+        memoryBefore
       };
 
       setMessages(prev => {
-        const next = [...prev, gmMsg];
-        updateStoredPlotSummary(next.map(m => m.text));
+        // Keep rollback snapshots only on the last few GM replies so saved chats stay small
+        let kept = 0;
+        const trimmed = [...prev].reverse().map(m => {
+          if (!m.hudBefore) return m;
+          if (++kept < 3) return m;
+          const { hudBefore, memoryBefore, ...rest } = m;
+          return rest;
+        }).reverse();
+        const next = [...trimmed, gmMsg];
+        foldOlderTurnsIntoSummary(next);
         return next;
       });
     } catch (err: any) {
@@ -260,6 +301,45 @@ export const GMChat: React.FC<GMChatProps> = ({
       setStreamingText('');
       isCallingApiRef.current = false;
     }
+  };
+
+  // --- Regenerate / edit / undo -------------------------------------------------------------
+
+  const lastUserIndex = messages.map(m => m.sender).lastIndexOf('user');
+  const lastGmIndex = messages.map(m => m.sender).lastIndexOf('gm');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+
+  // Roll HUD + GM memory back to just before the first GM reply after `fromIndex`
+  const rollbackFrom = (fromIndex: number): HUDState => {
+    const firstReply = messages.slice(fromIndex).find(m => m.sender === 'gm' && m.hudBefore);
+    if (!firstReply?.hudBefore) return hudState;
+    setHudState(firstReply.hudBefore);
+    restoreCampaignMemory(firstReply.memoryBefore ?? null);
+    return firstReply.hudBefore;
+  };
+
+  // Re-ask the GM for the last player action (also retries after a connection error)
+  const regenerateLast = () => {
+    if (loading || lastUserIndex === -1) return;
+    const base = messages.slice(0, lastUserIndex + 1);
+    const restoredHud = rollbackFrom(lastUserIndex + 1);
+    setMessages(base);
+    streamGMResponse(base, messages[lastUserIndex].text, restoredHud);
+  };
+
+  // Take back the last player action and everything after it; the text goes back in the input
+  const undoLast = () => {
+    if (loading || lastUserIndex === -1) return;
+    rollbackFrom(lastUserIndex + 1);
+    setInput(messages[lastUserIndex].text.includes('[CHECK RESOLUTION') ? '' : messages[lastUserIndex].text);
+    setMessages(messages.slice(0, lastUserIndex));
+  };
+
+  const saveEdit = (id: string) => {
+    const text = editDraft.trim();
+    if (text) setMessages(prev => prev.map(m => (m.id === id ? { ...m, text } : m)));
+    setEditingId(null);
   };
 
   const handleSendMessage = async (textToSend?: string) => {
@@ -345,11 +425,16 @@ export const GMChat: React.FC<GMChatProps> = ({
             <button 
               key={idx} 
               onClick={() => {
+                // "[Check: Perception vs DV 15]" / "[Quickhack: Short Circuit vs DV 16]" -> skill + DV
+                const tag = part.match(/\[\s*(Check|Quickhack)\s*:\s*(.+?)\s+vs\.?\s+DV\s*(\d+)/i);
+                const isHack = tag?.[1].toLowerCase() === 'quickhack';
                 setSelectedCheckChoice({
                   id: `manual_${Date.now()}`,
                   label: part,
-                  category: 'Tactical',
-                  promptText: 'I roll the check.'
+                  category: isHack ? 'Netrun' : 'Tactical',
+                  promptText: 'I roll the check.',
+                  skill: tag ? (isHack ? 'Interface' : tag[2]) : undefined,
+                  dv: tag ? parseInt(tag[3], 10) : undefined
                 });
                 setIsActionCheckOpen(true);
               }}
@@ -460,7 +545,7 @@ export const GMChat: React.FC<GMChatProps> = ({
         </div>
 
         <div className="flex-1 p-4 overflow-y-auto space-y-4 font-sans text-sm pb-32 relative">
-          {messages.map(msg => (
+          {messages.map((msg, idx) => (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} key={msg.id} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
               <div className="flex items-center gap-2 mb-1 font-mono text-[10px] text-neutral-500">
                 <span>{msg.sender === 'user' ? hudState.name : 'GM'}</span>
@@ -468,16 +553,45 @@ export const GMChat: React.FC<GMChatProps> = ({
               <div className={`max-w-2xl rounded-lg px-4 py-3 text-sm leading-relaxed ${
                   msg.sender === 'user' ? 'bg-cyan-950/40 border border-cyan-500/30 text-cyan-100' : 'bg-neutral-900 border border-neutral-800 text-neutral-300 shadow-md'
                 }`}>
-                <div className="whitespace-pre-wrap">{renderFormattedText(msg.text)}</div>
+                {editingId === msg.id ? (
+                  <div className="space-y-2">
+                    <textarea
+                      value={editDraft}
+                      onChange={e => setEditDraft(e.target.value)}
+                      rows={Math.min(16, Math.max(4, editDraft.split('\n').length + 1))}
+                      className="w-full min-w-[16rem] bg-black/40 border border-cyan-700 rounded p-2 text-sm text-neutral-200 focus:outline-none focus:border-cyan-400"
+                    />
+                    <div className="flex gap-2 font-mono text-[10px]">
+                      <button onClick={() => saveEdit(msg.id)} className="flex items-center gap-1 px-2 py-1 rounded border border-cyan-700 text-cyan-300 hover:bg-cyan-950"><Check className="h-3 w-3" /> SAVE</button>
+                      <button onClick={() => setEditingId(null)} className="px-2 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-white">CANCEL</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="whitespace-pre-wrap">{renderFormattedText(msg.text)}</div>
+                )}
               </div>
-              {msg.sender === 'gm' && (
-                <button
-                  onClick={() => setVisualiseTarget(msg)}
-                  className="mt-1 flex items-center gap-1 font-mono text-[10px] text-neutral-600 transition hover:text-fuchsia-400"
-                >
-                  <ImageIcon className="h-3 w-3" /> VISUALISE
-                </button>
-              )}
+              <div className="mt-1 flex items-center gap-3 font-mono text-[10px] text-neutral-600">
+                {msg.sender === 'gm' && (
+                  <button onClick={() => setVisualiseTarget(msg)} className="flex items-center gap-1 transition hover:text-fuchsia-400">
+                    <ImageIcon className="h-3 w-3" /> VISUALISE
+                  </button>
+                )}
+                {msg.sender === 'gm' && !loading && editingId !== msg.id && (
+                  <button onClick={() => { setEditingId(msg.id); setEditDraft(msg.text); }} className="flex items-center gap-1 transition hover:text-cyan-400">
+                    <Pencil className="h-3 w-3" /> EDIT
+                  </button>
+                )}
+                {!loading && idx === messages.length - 1 && msg.sender !== 'user' && lastUserIndex !== -1 && idx > lastUserIndex && (
+                  <button onClick={regenerateLast} className="flex items-center gap-1 transition hover:text-yellow-400">
+                    <RefreshCw className="h-3 w-3" /> {msg.sender === 'gm' ? 'REGENERATE' : 'RETRY'}
+                  </button>
+                )}
+                {msg.sender === 'user' && idx === lastUserIndex && !loading && (
+                  <button onClick={undoLast} className="flex items-center gap-1 transition hover:text-red-400">
+                    <Undo2 className="h-3 w-3" /> UNDO
+                  </button>
+                )}
+              </div>
               <GeneratedImageGallery
                 images={sceneImages.images.filter(img => img.messageId === msg.id)}
                 jobs={sceneImages.jobs.filter(job => job.messageId === msg.id)}

@@ -254,6 +254,49 @@ app.post('/api/quickhack', (req, res) => {
   });
 });
 
+// Story-so-far summariser: folds older turns into a compact chronicle so /api/chat only needs
+// the summary plus recent turns, instead of the whole campaign every request.
+app.post('/api/summarize', async (req, res) => {
+  const { previousSummary = '', messages = [] } = req.body || {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'No messages to summarise.' });
+  }
+  const transcript = messages
+    .filter((m: any) => m.sender === 'user' || m.sender === 'gm')
+    .map((m: any) => `${m.sender === 'user' ? 'PLAYER' : 'GM'}: ${String(m.text).slice(0, 6000)}`)
+    .join('\n\n');
+  const prompt = `You keep the campaign chronicle for a Cyberpunk RED tabletop game set in Night City, 2045.
+Merge the PREVIOUS CHRONICLE with the NEW TRANSCRIPT into one updated chronicle.
+
+Keep, as terse past-tense bullet points under these headings:
+## Events (in order; where things happened)
+## NPCs (name: who they are, relationship and trust with the player, current status)
+## Threads (unresolved jobs, debts, promises, enemies, mysteries)
+## Assets (notable gear, cyberware, eddies or favours gained or lost)
+
+Preserve every named NPC and unresolved thread. When space runs short, compress the oldest events first. Stay under 450 words. Output only the chronicle.
+
+PREVIOUS CHRONICLE:
+${previousSummary || '(none yet: this is the start of the campaign)'}
+
+NEW TRANSCRIPT:
+${transcript}`;
+
+  const clients = [false, true].map(isBackup => { try { return getGeminiClient(isBackup); } catch { return null; } }).filter(Boolean) as GoogleGenAI[];
+  for (const client of clients) {
+    for (const model of ['gemini-3.1-flash-lite', 'gemini-3-flash-preview']) {
+      try {
+        const result = await client.models.generateContent({ model, contents: prompt, config: { temperature: 0.3, maxOutputTokens: 2048 } });
+        const summary = result.text?.trim();
+        if (summary) return res.json({ summary, model });
+      } catch (err: any) {
+        console.warn(`Summariser failed on ${model}:`, err?.status || err?.code || '', String(err?.message || '').slice(0, 120));
+      }
+    }
+  }
+  res.status(502).json({ error: 'Story summariser unavailable; recent history will keep being sent in full.' });
+});
+
 // Game Master Chat AI Endpoint
 app.post('/api/chat', async (req, res) => {
   try {

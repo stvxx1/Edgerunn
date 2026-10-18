@@ -13,6 +13,7 @@ import { PREMADE_TEMPLATES, DEFAULT_FACTIONS, DEFAULT_CONTACTS, generateRandomSt
 import { AlertTriangle, RotateCcw, X } from 'lucide-react';
 import { useSceneImages } from './utils/useSceneImages';
 import { resetCampaignMemory } from './utils/promptBuilder';
+import { buildDefaultSkills } from './data/skills';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'hud' | 'combat' | 'quickhack' | 'gigs' | 'saves'>('chat');
@@ -55,6 +56,7 @@ export default function App() {
         'Kevlar Armor Vest (SP 11)'
       ],
       customDescription: defaultTemplate.lifepathSummary,
+      skills: buildDefaultSkills(defaultTemplate.role),
       factions: DEFAULT_FACTIONS,
       contacts: DEFAULT_CONTACTS,
       activeChoices: [],
@@ -174,7 +176,9 @@ export default function App() {
       factions: DEFAULT_FACTIONS,
       contacts: DEFAULT_CONTACTS,
       activeChoices: [],
-      activeEnemies: []
+      activeEnemies: [],
+      skills: buildDefaultSkills(template.role),
+      descriptiveDensity: 2
     });
 
     // Open character builder directly
