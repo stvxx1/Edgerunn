@@ -55,32 +55,26 @@ export const ActionCheckModal: React.FC<ActionCheckModalProps> = ({
   const handleRollDice = async () => {
     setIsRolling(true);
     try {
-      let rand = Math.pow(Math.random(), 1.4); // Skews results slightly lower to increase failure rate
-      let roll10 = Math.floor(rand * 10) + 1;
-      let d10Rolls = [roll10];
+      // Fair d10s. A manually entered roll replaces only the first die, so a physical 10 or 1
+      // still triggers the RED critical: one extra d10 added (10) or subtracted (1).
+      const d10 = () => Math.floor(Math.random() * 10) + 1;
+      const manual = parseInt(manualDiceRoll, 10);
+      const roll10 = !isNaN(manual) ? Math.min(10, Math.max(1, manual)) : d10();
+      const d10Rolls = [roll10];
       let rollTotal = roll10;
       let isExploded = false;
       let isImploded = false;
 
-      if (manualDiceRoll && !isNaN(parseInt(manualDiceRoll))) {
-        roll10 = Math.min(10, Math.max(1, parseInt(manualDiceRoll)));
-        d10Rolls = [roll10];
-        rollTotal = roll10;
-      } else {
-        if (roll10 === 10) {
-          isExploded = true;
-          let extraRand = Math.pow(Math.random(), 1.4);
-          let extra = Math.floor(extraRand * 10) + 1;
-          d10Rolls.push(extra);
-          rollTotal += extra;
-        } else if (roll10 === 1) {
-          isImploded = true;
-          // When fumbling, we want the penalty to be a normal random or skewed higher so it hurts more!
-          let penaltyRand = Math.pow(Math.random(), 0.8); 
-          let penalty = Math.floor(penaltyRand * 10) + 1;
-          d10Rolls.push(penalty);
-          rollTotal -= penalty;
-        }
+      if (roll10 === 10) {
+        isExploded = true;
+        const extra = d10();
+        d10Rolls.push(extra);
+        rollTotal += extra;
+      } else if (roll10 === 1) {
+        isImploded = true;
+        const penalty = d10();
+        d10Rolls.push(penalty);
+        rollTotal -= penalty;
       }
 
       const grandTotal = rollTotal + Number(statVal) + Number(skillVal) + Number(modVal);
@@ -110,7 +104,8 @@ export const ActionCheckModal: React.FC<ActionCheckModalProps> = ({
   const handleConfirmAndSend = () => {
     let checkText = '';
     if (rollResult) {
-      const rollsStr = rollResult.d10Rolls.join('+');
+      // A fumble's second die is subtracted, so show it with a minus
+      const rollsStr = rollResult.d10Rolls.join(rollResult.isImploded ? '-' : '+');
       checkText = `[CHECK RESOLUTION: Stat (${selectedStat} ${statVal}) + Skill (${skillName} ${skillVal}) + Mod (${modVal >= 0 ? '+' + modVal : modVal}) + 1d10 (${rollsStr}) = TOTAL ${rollResult.total} vs DV ${targetDV} -> ${rollResult.success ? 'SUCCESS' : 'FAILURE'}]`;
       if (initialChoice?.promptText) {
         checkText = `${checkText}\n\nPLAYER ACTION: ${initialChoice.promptText}`;
@@ -271,7 +266,7 @@ export const ActionCheckModal: React.FC<ActionCheckModalProps> = ({
 
             <div className="text-[11px] text-neutral-300 space-y-1">
               <div>
-                <strong>Math Breakdown:</strong> Stat ({selectedStat} {statVal}) + Skill ({skillName} {skillVal}) + Mod ({modVal}) + 1d10 ({rollResult.d10Rolls.join(' + ')}) = <strong className="text-white text-sm">{rollResult.total}</strong>
+                <strong>Math Breakdown:</strong> Stat ({selectedStat} {statVal}) + Skill ({skillName} {skillVal}) + Mod ({modVal}) + 1d10 ({rollResult.d10Rolls.join(rollResult.isImploded ? ' − ' : ' + ')}) = <strong className="text-white text-sm">{rollResult.total}</strong>
               </div>
               {rollResult.isExploded && (
                 <div className="text-yellow-400 font-bold flex items-center gap-1">

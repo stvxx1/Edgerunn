@@ -174,6 +174,8 @@ app.post('/api/damage', (req, res) => {
 
   if (rawDamage > currentSP) {
     hpDamageTaken = rawDamage - currentSP;
+    // Cyberpunk RED: damage that gets through head armour is doubled
+    if (location === 'Head') hpDamageTaken *= 2;
     // Armor ablates more significantly on penetrating hits
     newSP = Math.max(0, currentSP - 3);
     isAblated = true;
@@ -275,8 +277,12 @@ app.post('/api/chat', async (req, res) => {
 
     const contents: any[] = [];
 
-    // Add prior chat history
-    for (const msg of history) {
+    // Add prior chat history. System messages (connection errors etc.) aren't GM speech, and the
+    // client's history already ends with this same player message, which is re-sent below with the HUD.
+    const priorTurns = history.filter((msg: any) => msg.sender === 'user' || msg.sender === 'gm');
+    const lastTurn = priorTurns[priorTurns.length - 1];
+    if (lastTurn?.sender === 'user' && lastTurn.text === message) priorTurns.pop();
+    for (const msg of priorTurns) {
       contents.push({
         role: msg.sender === 'user' ? 'user' : 'model',
         parts: [{ text: msg.text }]

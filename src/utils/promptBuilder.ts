@@ -1,5 +1,5 @@
 import { HUDState } from '../types';
-import { MASTER_GM_SYSTEM_PROMPT } from '../data/ruleset';
+import { CYBERWARE_SHOP, MASTER_GM_SYSTEM_PROMPT } from '../data/ruleset';
 
 export function buildCampaignContext(hudState: HUDState): string {
   // Read plot summary & campaign memory from localStorage
@@ -34,6 +34,14 @@ export function buildCampaignContext(hudState: HUDState): string {
   // Format inventory items
   const inventoryFormatted = (hudState.inventory || []).join(', ') || 'Standard Gear';
 
+  // Installed chrome only appears in inventory by name; give the GM each piece's actual rules.
+  const installedCyberware = CYBERWARE_SHOP.filter(c =>
+    (hudState.inventory || []).some(item => item.toLowerCase().includes(c.name.toLowerCase()))
+  );
+  const cyberwareFormatted = installedCyberware.length > 0
+    ? installedCyberware.map(c => `  * ${c.name} [${c.category}]: ${c.description}`).join('\n')
+    : '  * None beyond what the inventory lists';
+
   // Format critical injuries
   const criticalInjuriesFormatted = (hudState.criticalInjuries || []).length > 0 
     ? hudState.criticalInjuries.join(', ') 
@@ -53,7 +61,9 @@ CHARACTER CORE PROFILE:
 - STATS BLOCK: ${statsFormatted}
 - CURRENT INVENTORY: ${inventoryFormatted}
 - ACTIVE CRITICAL INJURIES: ${criticalInjuriesFormatted}
-- CUSTOM DESCRIPTION & SIGNATURE LOOK: ${hudState.customDescription || 'Street runner aesthetic with custom chrome and combat gear.'}
+- INSTALLED CYBERWARE RULES (apply these exactly when the player uses them):
+${cyberwareFormatted}
+- CUSTOM DESCRIPTION, LOOK & BACKSTORY (history and appearance only, NOT the current location): ${hudState.customDescription || 'Street runner aesthetic with custom chrome and combat gear.'}
 
 - FACTION STANDINGS & REPUTATION: ${factionsFormatted}
 - KNOWN CONTACTS & FIXERS: ${contactsFormatted}
@@ -96,6 +106,7 @@ export function buildGMSystemInstruction(hudState: HUDState): string {
 - Named NPCs get a vivid physical introduction the first time they appear (build, face, clothing, chrome, a distinguishing mark).
 - When you pause for a check or a risk analysis (sections 2 and 5), still write the scene up to that moment at full length, then present the check.
 - Never decide what the player character says, thinks or does.
+- Continuity: pick up exactly where the most recent GM message left off: same location, NPCs and situation, unless the player's action moves the scene. Backstory and lifepath details are history, never a reason to relocate the scene.
 
 ### 11. OUTPUT PACKAGING (overrides the placement rules in sections 3 and 4; their content is still mandatory)
 Return one JSON object and nothing else (no markdown fences):
@@ -115,6 +126,29 @@ ${buildCampaignContext(hudState)}`;
 }
 
 // Keep the GM's [HIDDEN: ...] memory container so the next turn's prompt can feed it back.
+const MEMORY_KEY = 'edgerunners_campaign_memory';
+const PLOT_KEY = 'edgerunners_plot_summary';
+
+// The GM's memory belongs to one campaign: wipe it on a new run, swap it when loading a save.
+export function getCampaignMemory(): string | null {
+  try {
+    return localStorage.getItem(MEMORY_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function resetCampaignMemory(memory?: string | null, messages: string[] = []): void {
+  try {
+    if (memory) localStorage.setItem(MEMORY_KEY, memory);
+    else localStorage.removeItem(MEMORY_KEY);
+    localStorage.removeItem(PLOT_KEY);
+  } catch (e) {
+    console.warn('Failed to reset campaign memory', e);
+  }
+  if (messages.length) updateStoredPlotSummary(messages);
+}
+
 export function storeHiddenMemory(stateBlocks: string): void {
   const start = stateBlocks.indexOf('[HIDDEN:');
   if (start === -1) return;
