@@ -16,6 +16,7 @@ export interface HordeGenerateRequest {
   steps?: number;
   cfgScale?: number;
   sampler?: string;
+  clipSkip?: number; // local ComfyUI only
   seed?: string;
 }
 

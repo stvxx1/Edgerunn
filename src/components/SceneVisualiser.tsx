@@ -1,13 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud } from 'lucide-react';
 import { HUDState } from '../types';
-import { buildScenePrompt, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { buildScenePrompt, requestScenePrompt, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { describeCharacterLook } from '../utils/characterLook';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
 interface SceneVisualiserProps {
   messageId: string;
   sceneText: string;
   hudState: HUDState;
+  context: string[]; // the few messages before this one, so NPC looks can be recalled
   onClose: () => void;
   onGenerate: (req: SceneImageRequest) => Promise<void>;
 }
@@ -36,6 +38,9 @@ interface VisualiserSettings {
   nsfw: boolean;
   aspect: AspectKey;
   steps: number;
+  cfg: number;
+  sampler: string;
+  clipSkip: number;
   negativePrompt: string;
 }
 
@@ -46,8 +51,14 @@ const DEFAULT_SETTINGS: VisualiserSettings = {
   nsfw: false,
   aspect: 'portrait',
   steps: 25,
+  cfg: 6,
+  sampler: 'dpmpp_2m',
+  clipSkip: 1,
   negativePrompt: DEFAULT_NEGATIVE_PROMPT
 };
+
+// Samplers offered for local ComfyUI runs ('lcm' is for LCM-distilled models)
+const SAMPLERS = ['dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde', 'euler', 'euler_ancestral', 'lcm'];
 
 const loadSettings = (): VisualiserSettings => {
   try {
@@ -68,8 +79,14 @@ const saveSettings = (s: VisualiserSettings) => {
   }
 };
 
-export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sceneText, hudState, onClose, onGenerate }) => {
-  const [prompt, setPrompt] = useState(() => buildScenePrompt(sceneText, hudState));
+export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sceneText, hudState, context, onClose, onGenerate }) => {
+  // Starts as the plain summary so something is there instantly; Gemini's rewrite replaces it
+  // The protagonist's look, pulled from the character sheet (description, lifepath, chrome, gear, wounds)
+  const characterLook = useMemo(() => describeCharacterLook(hudState), [hudState]);
+  const [prompt, setPrompt] = useState(() => buildScenePrompt(sceneText, characterLook));
+  const [promptSource, setPromptSource] = useState<'writing' | 'ai' | 'basic'>('writing');
+  const userEdited = useRef(false);
+  const startedFor = useRef<string | null>(null);
   const [settings, setSettings] = useState<VisualiserSettings>(loadSettings);
   const [models, setModels] = useState<HordeModelOption[]>([]);
   const [hasApiKey, setHasApiKey] = useState(true);
@@ -99,6 +116,31 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
     return () => { stale = true; };
   }, [settings.backend, comfyAvailable]);
 
+  const writePrompt = async (force: boolean) => {
+    if (force) userEdited.current = false;
+    setPromptSource('writing');
+    try {
+      const written = await requestScenePrompt({
+        sceneText,
+        recent: context,
+        protagonist: characterLook,
+        modelName: settings.models[settings.backend],
+        fresh: force
+      });
+      if (!userEdited.current) setPrompt(written);
+      setPromptSource('ai');
+    } catch {
+      if (!userEdited.current) setPrompt(buildScenePrompt(sceneText, characterLook));
+      setPromptSource('basic');
+    }
+  };
+
+  useEffect(() => {
+    if (startedFor.current === messageId) return; // StrictMode runs effects twice in dev
+    startedFor.current = messageId;
+    writePrompt(false);
+  }, [messageId]);
+
   const update = (patch: Partial<VisualiserSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
@@ -122,7 +164,11 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         nsfw: settings.nsfw,
         width,
         height,
-        steps: settings.steps
+        // Horde jobs below 10 steps aren't accepted; local runs can go as low as 1
+        steps: Math.max(settings.backend === 'comfyui' ? 1 : 10, settings.steps),
+        cfgScale: settings.cfg,
+        sampler: settings.sampler,
+        clipSkip: settings.clipSkip
       });
       onClose();
     } catch (err: any) {
@@ -176,17 +222,27 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         </div>
 
         <label className="mb-1 flex items-center justify-between text-neutral-500">
-          <span>PROMPT</span>
-          <button onClick={() => setPrompt(buildScenePrompt(sceneText, hudState))} className="flex items-center gap-1 hover:text-fuchsia-300">
-            <RotateCcw className="h-3 w-3" /> rebuild from scene
+          <span>
+            PROMPT
+            <span className={`ml-2 text-[10px] ${promptSource === 'ai' ? 'text-fuchsia-400' : promptSource === 'basic' ? 'text-yellow-500/80' : 'text-neutral-500'}`}>
+              {promptSource === 'writing' ? 'writing from the scene…' : promptSource === 'ai' ? '✨ written from the scene' : 'quick summary (AI prompt writer unavailable; edit freely)'}
+            </span>
+          </span>
+          <button onClick={() => writePrompt(true)} disabled={promptSource === 'writing'} className="flex items-center gap-1 hover:text-fuchsia-300 disabled:opacity-50">
+            <RotateCcw className={`h-3 w-3 ${promptSource === 'writing' ? 'animate-spin' : ''}`} /> rewrite from scene
           </button>
         </label>
         <textarea
           value={prompt}
-          onChange={e => setPrompt(e.target.value)}
+          onChange={e => { userEdited.current = true; setPrompt(e.target.value); }}
           rows={6}
           className="mb-3 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-2 font-sans text-sm text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
         />
+
+        <p className="mb-3 -mt-2 text-[10px] leading-snug text-neutral-500">
+          <span className="text-neutral-400">Your character, from the sheet: </span>
+          {characterLook || 'nothing yet. Describe your look on the HUD tab (EDIT DESCRIPTION).'}
+        </p>
 
         <label className="mb-1 block text-neutral-500">NEGATIVE PROMPT</label>
         <textarea
@@ -195,6 +251,17 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           rows={2}
           className="mb-3 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-2 font-sans text-xs text-neutral-400 focus:border-fuchsia-500 focus:outline-none"
         />
+
+        {isLocal && (
+          <button
+            type="button"
+            onClick={() => update({ steps: 10, cfg: 1, sampler: 'lcm', clipSkip: 1 })}
+            className="mb-3 w-full rounded border border-neutral-700 bg-neutral-900 py-1.5 text-[11px] text-neutral-300 transition hover:border-fuchsia-500 hover:text-fuchsia-300"
+            title="For LCM / Lightning / 'Fast' models that recommend CFG 1 and 8-15 steps"
+          >
+            ⚡ FAST-MODEL PRESET: 10 steps · CFG 1 · LCM sampler
+          </button>
+        )}
 
         <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
@@ -228,16 +295,53 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-neutral-500">STEPS: {settings.steps}</label>
+            <label className="mb-1 block text-neutral-500">STEPS: {Math.max(isLocal ? 1 : 10, settings.steps)}</label>
             <input
               type="range"
-              min={10}
+              min={isLocal ? 1 : 10}
               max={50}
-              value={settings.steps}
+              value={Math.max(isLocal ? 1 : 10, settings.steps)}
               onChange={e => update({ steps: Number(e.target.value) })}
               className="w-full accent-fuchsia-500"
             />
           </div>
+          <div>
+            <label className="mb-1 block text-neutral-500">CFG: {settings.cfg}</label>
+            <input
+              type="range"
+              min={1}
+              max={12}
+              step={0.5}
+              value={settings.cfg}
+              onChange={e => update({ cfg: Number(e.target.value) })}
+              className="w-full accent-fuchsia-500"
+            />
+          </div>
+          {isLocal && (
+            <>
+              <div>
+                <label className="mb-1 block text-neutral-500">SAMPLER</label>
+                <select
+                  value={settings.sampler}
+                  onChange={e => update({ sampler: e.target.value })}
+                  className="w-full rounded border border-neutral-800 bg-neutral-900 p-2 text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
+                >
+                  {SAMPLERS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-neutral-500">CLIP SKIP</label>
+                <select
+                  value={settings.clipSkip}
+                  onChange={e => update({ clipSkip: Number(e.target.value) })}
+                  className="w-full rounded border border-neutral-800 bg-neutral-900 p-2 text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
+                >
+                  <option value={1}>1 (default)</option>
+                  <option value={2}>2 (many anime models)</option>
+                </select>
+              </div>
+            </>
+          )}
           {isLocal ? (
             <span className="self-end pb-1 text-[10px] text-neutral-500">Local GPU · no content filter</span>
           ) : (
@@ -260,11 +364,11 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
 
         <button
           onClick={handleGenerate}
-          disabled={submitting || !prompt.trim()}
+          disabled={submitting || !prompt.trim() || promptSource === 'writing'}
           className="flex w-full items-center justify-center gap-2 rounded border border-fuchsia-600 bg-fuchsia-950/60 py-2 font-bold tracking-wider text-fuchsia-300 transition hover:bg-fuchsia-900/60 disabled:opacity-50"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
-          {submitting ? 'UPLINKING...' : 'GENERATE'}
+          {submitting ? 'UPLINKING...' : promptSource === 'writing' ? 'WRITING PROMPT...' : 'GENERATE'}
         </button>
       </div>
     </div>

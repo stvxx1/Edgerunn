@@ -79,7 +79,8 @@ export const CharacterBuilder: React.FC<CharacterBuilderProps> = ({ hudState, se
       stats: template.stats,
       inventory: initialInventory,
       customDescription: template.lifepathSummary,
-      skills: buildDefaultSkills(template.role)
+      skills: buildDefaultSkills(template.role),
+      lifepath: undefined // a premade character has no rolled lifepath; don't inherit the last one
     }));
 
     onComplete();
@@ -152,7 +153,8 @@ export const CharacterBuilder: React.FC<CharacterBuilderProps> = ({ hudState, se
       stats,
       inventory: initialInventory,
       customDescription: customDescription.trim() || `Street-hardened ${charRole} carving a path through the neon underbelly of Night City.`,
-      skills: buildDefaultSkills(charRole)
+      skills: buildDefaultSkills(charRole),
+      lifepath
     }));
 
     onComplete();

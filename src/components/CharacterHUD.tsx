@@ -213,6 +213,10 @@ export const CharacterHUD: React.FC<CharacterHUDProps> = ({ hudState, setHudStat
               placeholder="Describe your appearance, chrome implants, clothes, scars, and attitude..."
               className="w-full bg-neutral-950 border border-neutral-700 focus:border-cyan-400 rounded p-2.5 text-xs text-neutral-200 font-mono resize-y"
             />
+            <p className="text-[10px] text-neutral-500 leading-snug">
+              For scene art, put what you LOOK like here (hair, build, face, scars, clothes). Backstory is fine too, but only the looks are used for images.
+              Installed chrome, weapons, armour and wounds are read automatically from your inventory and vitals.
+            </p>
           </div>
         ) : (
           hudState.customDescription && (

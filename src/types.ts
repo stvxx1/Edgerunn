@@ -86,6 +86,7 @@ export interface HUDState {
   activeEnemies?: EnemyUnit[];
   descriptiveDensity: number; // 1-3
   skills?: Record<string, number>; // skill name -> rank; older saves lack it (see getSkills)
+  lifepath?: LifepathDetails; // saved from the character builder; its fashion style feeds scene art
 }
 
 export interface LifepathDetails {

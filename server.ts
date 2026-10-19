@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { CRITICAL_INJURIES, MASTER_GM_SYSTEM_PROMPT, QUICKHACKS_LIBRARY } from './src/data/ruleset';
 import { CheckResult, DamageResult, HUDState } from './src/types';
 import { generateOfflineGMResponse } from './src/utils/localGMGenerator';
@@ -100,13 +100,15 @@ app.post('/api/dice', (req, res) => {
 // Scene Visualiser — image generation via AI Horde or a local ComfyUI (submit, then poll).
 // Job ids carry a prefix for local jobs so polling/cancel route to the right backend.
 app.post('/api/generate-image', async (req, res) => {
-  const { backend, prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed } = req.body || {};
+  const { backend, prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, sampler, clipSkip, seed } = req.body || {};
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return res.status(400).json({ error: 'A prompt is required.' });
   }
   try {
     const submit = backend === 'comfyui' ? submitComfyJob : submitHordeJob;
-    const job = await submit({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed });
+    // sampler and clip skip are ComfyUI concepts; the Horde keeps its own defaults
+    const extra = backend === 'comfyui' ? { sampler, clipSkip } : {};
+    const job = await submit({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed, ...extra });
     res.status(202).json(job);
   } catch (error: any) {
     console.error(`${backend === 'comfyui' ? 'ComfyUI' : 'AI Horde'} submit failed:`, error?.message, error?.details || '');
@@ -254,6 +256,136 @@ app.post('/api/quickhack', (req, res) => {
   });
 });
 
+// Primary then backup key; a missing key just yields fewer clients instead of throwing
+const geminiClients = (): GoogleGenAI[] =>
+  [false, true].map(isBackup => { try { return getGeminiClient(isBackup); } catch { return null; } }).filter(Boolean) as GoogleGenAI[];
+
+// Text models for the small helper jobs (prompt writer, summariser), best first. Each has its own
+// free-tier quota and capacity pool, so one being rate-limited or overloaded just moves us to the
+// next. The "-latest" aliases track whatever Google currently calls its lite/flash model.
+const envList = (name: string, fallback: string[]) => {
+  const custom = (process.env[name] || '').split(',').map(m => m.trim()).filter(Boolean);
+  return custom.length ? custom : fallback;
+};
+
+const HELPER_MODELS = envList('GEMINI_HELPER_MODELS', [
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-3-flash-preview',
+  'gemini-flash-latest',
+  'gemini-3.1-flash-lite-preview'
+]);
+
+// Run a short text job through every key x model until one gives an answer `accept` likes.
+// 404/429/403 (gone, out of quota, blocked) are skipped for the rest of the request; 5xx
+// (overloaded) gets a second pass after a short pause. Returns null if nothing worked in time.
+const generateText = async (opts: {
+  contents: string;
+  config: Record<string, any>;
+  accept: (text: string) => string | null;
+  budgetMs?: number;
+  minimalThinking?: boolean; // a short answer needs no reasoning, and thinking tokens count against the output cap
+}): Promise<{ text: string; model: string } | null> => {
+  const deadline = Date.now() + (opts.budgetMs ?? 20000);
+  const clients = geminiClients();
+  const dead = new Set<string>();
+  let thinkingOk = !!opts.minimalThinking;
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (let ci = 0; ci < clients.length; ci++) {
+      for (const model of HELPER_MODELS) {
+        const id = `${ci}:${model}`;
+        for (let attempt = 0; attempt < 2 && !dead.has(id) && Date.now() < deadline; attempt++) {
+          try {
+            const result = await clients[ci].models.generateContent({
+              model,
+              contents: opts.contents,
+              config: {
+                ...opts.config,
+                httpOptions: { timeout: 10000 },
+                ...(thinkingOk ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } } : {})
+              }
+            });
+            if (result.candidates?.[0]?.finishReason === 'MAX_TOKENS') break; // cut off: try the next model
+            const text = opts.accept(result.text || '');
+            if (text) return { text, model };
+            break; // answered but unusable (e.g. blocked): try the next model
+          } catch (err: any) {
+            const code = err?.status || err?.code;
+            console.warn(`Helper job failed on ${model}${ci ? ' (backup key)' : ''}:`, code || '', String(err?.message || '').slice(0, 90));
+            if (code === 400 && thinkingOk) { thinkingOk = false; continue; } // model rejects the thinking setting
+            if (code === 404 || code === 429 || code === 403) dead.add(id);
+            break;
+          }
+        }
+      }
+    }
+    if (pass === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 900));
+  }
+  return null;
+};
+
+// Image prompt writer: turns the scene on screen into a Stable Diffusion prompt that says who is
+// doing what where, instead of pasting the narration (which SD models can't use).
+const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|hentai|waifu|toon|manga|2d|cartoon/i;
+
+app.post('/api/scene-prompt', async (req, res) => {
+  const { sceneText, recent = [], protagonist = '', modelName = '' } = req.body || {};
+  if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
+
+  const style = ANIME_MODEL.test(String(modelName))
+    ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
+    : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
+
+  const systemInstruction = `You turn one scene from a Cyberpunk RED text roleplay into ONE image-generation prompt for Stable Diffusion 1.5.
+
+Output exactly one line of comma-separated tags and short phrases, 45-65 words, and nothing else: no quotes, labels, markdown or explanation.
+
+Order matters, earlier tags weigh more:
+1. Subjects: how many people, and each one's visible look (build, hair, clothing, cyberware, wounds), taken from the scene, the recent story and the protagonist description.
+2. What they are doing right now: pose, action, expression, who faces whom, what they hold.
+3. Setting: location, key objects, weather.
+4. Lighting and mood.
+5. Camera framing.
+6. Three or four quality tags.
+
+Rules:
+- Draw the single most visual moment of the scene, not a summary of it.
+- Describe people by appearance, never by name ("a scarred man in a grey suit", not "Vane").
+- The protagonist is "you" in the scene text: describe them from the character sheet line (their look, fashion, visible chrome, what they carry and any wounds), unless the scene itself says otherwise.
+- No dialogue, sounds, smells, backstory or abstract feelings; only things a camera could see.
+- Describe the scene faithfully, including violence or intimacy, without softening or adding to it.
+- Every character is an adult (18+). Never describe anyone as a child or a youthful-looking minor.
+${style}`;
+
+  const contents = `PROTAGONIST ("you"), from the character sheet (look, lifepath fashion, visible chrome, gear, wounds): ${String(protagonist).slice(0, 900) || 'a street mercenary'}
+
+RECENT STORY (oldest first, only to learn who and what things look like):
+${(Array.isArray(recent) ? recent : []).map((t: any) => String(t).slice(0, 1200)).join('\n---\n') || '(none)'}
+
+SCENE TO ILLUSTRATE:
+${sceneText.slice(0, 5000)}`;
+
+  const written = await generateText({
+    contents,
+    config: { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
+    minimalThinking: true,
+    budgetMs: 20000, // the client gives up after ~24s, so don't keep working past that
+    accept: text => {
+      const line = text
+        .replace(/```[a-z]*/gi, '')
+        .replace(/^(prompt|positive prompt)\s*:\s*/i, '')
+        .replace(/["“”]/g, '')
+        .split('\n').map(l => l.trim()).filter(Boolean).join(', ')
+        .replace(/,\s*,/g, ',')
+        .trim();
+      return line.length > 20 ? line.slice(0, 800) : null;
+    }
+  });
+  if (written) return res.json({ prompt: written.text, model: written.model });
+  res.status(502).json({ error: 'Prompt writer unavailable.' });
+});
+
 // Story-so-far summariser: folds older turns into a compact chronicle so /api/chat only needs
 // the summary plus recent turns, instead of the whole campaign every request.
 app.post('/api/summarize', async (req, res) => {
@@ -282,18 +414,14 @@ ${previousSummary || '(none yet: this is the start of the campaign)'}
 NEW TRANSCRIPT:
 ${transcript}`;
 
-  const clients = [false, true].map(isBackup => { try { return getGeminiClient(isBackup); } catch { return null; } }).filter(Boolean) as GoogleGenAI[];
-  for (const client of clients) {
-    for (const model of ['gemini-3.1-flash-lite', 'gemini-3-flash-preview']) {
-      try {
-        const result = await client.models.generateContent({ model, contents: prompt, config: { temperature: 0.3, maxOutputTokens: 2048 } });
-        const summary = result.text?.trim();
-        if (summary) return res.json({ summary, model });
-      } catch (err: any) {
-        console.warn(`Summariser failed on ${model}:`, err?.status || err?.code || '', String(err?.message || '').slice(0, 120));
-      }
-    }
-  }
+  const summary = await generateText({
+    contents: prompt,
+    config: { temperature: 0.3, maxOutputTokens: 2048 },
+    minimalThinking: true,
+    budgetMs: 30000,
+    accept: text => text.trim() || null
+  });
+  if (summary) return res.json({ summary: summary.text, model: summary.model });
   res.status(502).json({ error: 'Story summariser unavailable; recent history will keep being sent in full.' });
 });
 
@@ -367,11 +495,16 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
 [DESCRIPTIVE DENSITY: ${currentHUD?.descriptiveDensity || 2}/3]`);
 
     // flash-preview hits the density word targets; flash-lite undershoots by ~40% but stays as quota fallback
-    const candidateModels = [
+    // Best prose first. Each model has its own quota and capacity pool, so when one is out of
+    // quota (429) or overloaded (503) we move to the next instead of dropping to the canned GM.
+    // The "-latest" aliases follow whatever Google currently calls its flash / flash-lite model.
+    const candidateModels = envList('GEMINI_CHAT_MODELS', [
       'gemini-3-flash-preview',
+      'gemini-flash-latest',
       'gemini-3.1-flash-lite',
+      'gemini-flash-lite-latest',
       'gemini-3.1-flash-lite-preview'
-    ];
+    ]);
 
     let responseStream: any = null;
     let lastError: any = null;
@@ -385,12 +518,19 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
     const backupClient = getGeminiClient(true);
     if (backupClient) clientsToTry.push({ label: 'Backup Key', isBackup: true, client: backupClient });
 
-    modelLoop:
-    for (const clientConfig of clientsToTry) {
-      if (!clientConfig.client) continue;
+    // 404 / 429 / 403 (gone, out of quota, blocked) won't recover within this request; overloaded
+    // (5xx) models get a second pass after a pause.
+    const dead = new Set<string>();
+    const chatDeadline = Date.now() + 45000;
 
-      for (const modelName of candidateModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
+    modelLoop:
+    for (let pass = 0; pass < 2; pass++) {
+      for (const clientConfig of clientsToTry) {
+        if (!clientConfig.client) continue;
+
+        for (const modelName of candidateModels) {
+          const id = `${clientConfig.label}:${modelName}`;
+          if (dead.has(id) || Date.now() > chatDeadline) continue;
           try {
             responseStream = await clientConfig.client.models.generateContentStream({
               model: modelName,
@@ -411,30 +551,23 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
           } catch (modelErr: any) {
             lastError = modelErr;
             const errMsg = modelErr?.message || '';
-            const isRateLimit = modelErr?.status === 'RESOURCE_EXHAUSTED' || 
-              modelErr?.code === 429 || 
-              errMsg.includes('429') || 
-              errMsg.includes('RESOURCE_EXHAUSTED') ||
-              errMsg.includes('credits are depleted') ||
-              errMsg.includes('quota');
+            const code = modelErr?.code || modelErr?.status;
+            const isRateLimit = code === 'RESOURCE_EXHAUSTED' || code === 429 ||
+              errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') ||
+              errMsg.includes('credits are depleted') || errMsg.includes('quota');
+            const isGone = code === 404 || code === 403 || errMsg.includes('404');
 
-            if (isRateLimit) {
-              console.warn(`${clientConfig.label} quota/credits exhausted on ${modelName}.`);
-              // If we have a backup client and this was the primary, break to next client immediately!
-              break;
-            }
-
-            const isNotFound = modelErr?.code === 404 || errMsg.includes('404');
-            if (isNotFound) {
-              break; // Try next model
-            }
-
-            if (attempt === 0) {
-              await sleep(500);
-            }
+            if (isRateLimit) console.warn(`${clientConfig.label} quota/credits exhausted on ${modelName}.`);
+            else console.warn(`${clientConfig.label} failed on ${modelName}: ${code || ''} ${errMsg.slice(0, 80)}`);
+            if (isRateLimit || isGone) dead.add(id);
           }
         }
       }
+      if (pass === 0) await sleep(1500);
+    }
+
+    if (!responseStream && clientsToTry.length < 2) {
+      console.warn('Tip: set GEMINI_API_KEY_BACKUP to a key from a DIFFERENT Google project; free-tier quota is per project, so a second key from the same project adds nothing.');
     }
 
       if (!responseStream) {

@@ -6,9 +6,33 @@ import type { HordeGenerateRequest, HordeJobStatus } from './aiHorde';
 export const COMFY_JOB_PREFIX = 'comfy_';
 
 const CLIENT_ID = randomUUID();
-const getBase = () => (process.env.COMFYUI_URL || 'http://127.0.0.1:8188').replace(/\/+$/, '');
+// COMFYUI_URL wins when set. Otherwise look for ComfyUI on its two usual local ports: 8188
+// (portable and command-line installs) and 8000 (ComfyUI Desktop).
+const AUTO_PORTS = [8188, 8000];
+let detectedBase: string | null = null;
+
+const getBase = () => (process.env.COMFYUI_URL?.trim() || detectedBase || `http://127.0.0.1:${AUTO_PORTS[0]}`).replace(/\/+$/, '');
+
+const detectBase = async (): Promise<boolean> => {
+  if (process.env.COMFYUI_URL?.trim()) return true;
+  for (const port of AUTO_PORTS) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/system_stats`, { signal: AbortSignal.timeout(1200) });
+      if (res.ok) {
+        detectedBase = `http://127.0.0.1:${port}`;
+        return true;
+      }
+    } catch {
+      // not listening on this port
+    }
+  }
+  detectedBase = null;
+  return false;
+};
 
 const comfyFetch = async (pathname: string, init: RequestInit = {}, timeoutMs = 15000) => {
+  // With no COMFYUI_URL, find the running instance first (cheap once cached; re-probed after a failure)
+  if (!process.env.COMFYUI_URL?.trim() && !detectedBase) await detectBase();
   let res: Response;
   try {
     res = await fetch(`${getBase()}${pathname}`, {
@@ -17,7 +41,9 @@ const comfyFetch = async (pathname: string, init: RequestInit = {}, timeoutMs = 
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch {
-    const err: any = new Error(`ComfyUI is not reachable at ${getBase()}. Is it running?`);
+    detectedBase = null; // it may have moved or been restarted; probe again next time
+    const where = process.env.COMFYUI_URL?.trim() ? process.env.COMFYUI_URL.trim() : `port ${AUTO_PORTS.join(' or ')} on this machine`;
+    const err: any = new Error(`ComfyUI wasn't found at ${where}. Is it running?`);
     err.status = 503;
     throw err;
   }
@@ -55,21 +81,34 @@ const snap = (n: number | undefined, fallback: number) => {
 };
 
 // Standard txt2img graph in ComfyUI's API format. Node ids are arbitrary but must be consistent.
-const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => ({
+// Samplers the visualiser offers; LCM-style samplers need the sgm_uniform scheduler, the rest use karras
+const schedulerFor = (sampler: string) => (sampler === 'lcm' ? 'sgm_uniform' : 'karras');
+
+const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => {
+  const sampler = req.sampler || 'dpmpp_2m';
+  // Clip skip 2 (common for anime SD1.5 models) = stop at the second-to-last CLIP layer
+  const useClipSkip = (req.clipSkip ?? 1) > 1;
+  const clip: [string, number] = useClipSkip ? ['10', 0] : ['4', 1];
+  // LCM-distilled models: ComfyUI's LCM example adds ModelSamplingDiscrete(lcm) ahead of the sampler
+  const isLcm = sampler === 'lcm';
+  const samplerModel: [string, number] = isLcm ? ['11', 0] : ['4', 0];
+  return {
   '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
+  ...(isLcm ? { '11': { class_type: 'ModelSamplingDiscrete', inputs: { model: ['4', 0], sampling: 'lcm', zsnr: false } } } : {}),
+  ...(useClipSkip ? { '10': { class_type: 'CLIPSetLastLayer', inputs: { clip: ['4', 1], stop_at_clip_layer: -Math.min(4, req.clipSkip as number) } } } : {}),
   '5': { class_type: 'EmptyLatentImage', inputs: { width: snap(req.width, 832), height: snap(req.height, 1216), batch_size: 1 } },
-  '6': { class_type: 'CLIPTextEncode', inputs: { text: req.prompt.trim(), clip: ['4', 1] } },
-  '7': { class_type: 'CLIPTextEncode', inputs: { text: req.negativePrompt?.trim() || '', clip: ['4', 1] } },
+  '6': { class_type: 'CLIPTextEncode', inputs: { text: req.prompt.trim(), clip } },
+  '7': { class_type: 'CLIPTextEncode', inputs: { text: req.negativePrompt?.trim() || '', clip } },
   '3': {
     class_type: 'KSampler',
     inputs: {
       seed: req.seed ? Number(req.seed) : Math.floor(Math.random() * 2 ** 32),
-      steps: Math.min(60, Math.max(5, req.steps ?? 25)),
-      cfg: req.cfgScale ?? 6,
-      sampler_name: req.sampler || 'dpmpp_2m',
-      scheduler: 'karras',
+      steps: Math.min(60, Math.max(1, req.steps ?? 25)),
+      cfg: Math.min(30, Math.max(1, req.cfgScale ?? 6)),
+      sampler_name: sampler,
+      scheduler: schedulerFor(sampler),
       denoise: 1,
-      model: ['4', 0],
+      model: samplerModel,
       positive: ['6', 0],
       negative: ['7', 0],
       latent_image: ['5', 0]
@@ -77,7 +116,8 @@ const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => ({
   },
   '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
   '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'edgerunn', images: ['8', 0] } }
-});
+  };
+};
 
 export const submitComfyJob = async (req: HordeGenerateRequest): Promise<{ id: string; kudos: number }> => {
   let ckpt = req.model;
