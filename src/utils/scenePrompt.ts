@@ -132,7 +132,7 @@ export const composeFramePrompt = (beat: string, sceneText: string, look?: strin
 export const requestSceneBeats = async (args: { sceneText: string; recent: string[]; protagonist?: string; count: number }): Promise<string[]> => {
   const res = await fetch('/api/scene-beats', {
     method: 'POST',
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(180000),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sceneText: stripMarkup(args.sceneText),
@@ -180,7 +180,7 @@ export const requestScenePrompt = async (args: {
   if (cached) return cached;
   const res = await fetch('/api/scene-prompt', {
     method: 'POST',
-    signal: AbortSignal.timeout(120000), // slow local models need the time; Gemini alone gives up on the server after ~14s
+    signal: AbortSignal.timeout(180000), // slow local models need the time; Gemini alone gives up on the server after ~14s
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sceneText: stripMarkup(args.sceneText),

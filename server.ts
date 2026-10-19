@@ -438,31 +438,7 @@ const cleanPromptTags = (line: string, maxWords = 80) => {
   return out;
 };
 
-// Slot mode (for small local models): the model only fills in four short fields and the code builds
-// the prompt around them, so it can't ramble or forget the quality tags.
-const SLOT_LABELS = ['SUBJECTS', 'ACTION', 'SETTING', 'CAMERA'] as const;
-const parseSlots = (text: string): Record<string, string> | null => {
-  const out: Record<string, string> = {};
-  for (const raw of text.replace(/```[a-z]*/gi, '').split('\n')) {
-    const m = raw.replace(/\*+/g, '').match(/^\s*[-•]?\s*(SUBJECTS?|ACTION|SETTING|CAMERA)\s*[:\-]\s*(.+)$/i);
-    if (m) out[m[1].toUpperCase().replace(/^SUBJECT$/, 'SUBJECTS')] = m[2].replace(/["“”]/g, '').replace(/[.;]+$/, '').trim();
-  }
-  return out.SUBJECTS && out.ACTION ? out : null;
-};
-
-app.post('/api/scene-prompt', async (req, res) => {
-  const { sceneText, recent = [], protagonist = '', modelName = '' } = req.body || {};
-  if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
-
-  const style = ANIME_MODEL.test(String(modelName))
-    ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
-    : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
-
-  const isAnime = ANIME_MODEL.test(String(modelName));
-  const closingTags = isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
-  const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
-
-  const slotInstruction = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it for an image generator.
+const SLOT_INSTRUCTION = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it for an image generator.
 
 Answer with exactly these four lines and nothing else:
 SUBJECTS: who is in the shot (at most 2 people), each with gender, an adult age like "30 year old", build, hair, clothing or nakedness, cyberware
@@ -491,9 +467,34 @@ ACTION: the man kneels over the woman on the bed, kissing her neck while she pul
 SETTING: luxury penthouse bedroom, rumpled sheets, city lights through a large window
 CAMERA: close medium shot, warm dim lamp lighting`;
 
+// Slot mode (for small local models): the model only fills in four short fields and the code builds
+// the prompt around them, so it can't ramble or forget the quality tags.
+const SLOT_LABELS = ['SUBJECTS', 'ACTION', 'SETTING', 'CAMERA'] as const;
+const parseSlots = (text: string): Record<string, string> | null => {
+  const out: Record<string, string> = {};
+  for (const raw of text.replace(/```[a-z]*/gi, '').split('\n')) {
+    const m = raw.replace(/\*+/g, '').match(/^\s*[-•]?\s*(SUBJECTS?|ACTION|SETTING|CAMERA)\s*[:\-]\s*(.+)$/i);
+    if (m) out[m[1].toUpperCase().replace(/^SUBJECT$/, 'SUBJECTS')] = m[2].replace(/["“”]/g, '').replace(/[.;]+$/, '').trim();
+  }
+  return out.SUBJECTS && out.ACTION ? out : null;
+};
+
+app.post('/api/scene-prompt', async (req, res) => {
+  const { sceneText, recent = [], protagonist = '', modelName = '' } = req.body || {};
+  if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
+
+  const style = ANIME_MODEL.test(String(modelName))
+    ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
+    : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
+
+  const isAnime = ANIME_MODEL.test(String(modelName));
+  const closingTags = isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
+  const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
+
+
   const slotContents = `CHARACTER SHEET for "you": ${String(protagonist).slice(0, 400) || 'a street mercenary'}
 
-SCENE: ${sceneText.slice(-2500)}`;
+SCENE: ${sceneText.slice(-1400)}`;
 
   const systemInstruction = `You turn one scene from a Cyberpunk RED text roleplay into ONE image-generation prompt for Stable Diffusion 1.5.
 
@@ -527,10 +528,10 @@ ${sceneText.slice(0, 5000)}`;
   const report: HelperReport = {};
   const written = await generateText({
     contents: slotMode ? slotContents : contents,
-    config: slotMode ? { systemInstruction: slotInstruction, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
+    config: slotMode ? { systemInstruction: SLOT_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
     minimalThinking: true,
     budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~2 min)
-    localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 90000, // a phone or CPU-only model can take a while
+    localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000, // a phone or CPU-only model can take a while
     preferLocal: process.env.HELPER_PREFER === 'local',
     report,
     accept: text => {
@@ -591,7 +592,7 @@ ${sceneText.slice(0, 5000)}`;
     config: { systemInstruction, temperature: 0.6, maxOutputTokens: 2048 },
     minimalThinking: true,
     budgetMs: 14000,
-    localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 90000,
+    localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000,
     preferLocal: process.env.HELPER_PREFER === 'local',
     report,
     accept: text => {
@@ -904,6 +905,12 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`⚡ EDGERUNNERS ENHANCED GM ENGINE SERVER RUNNING ON PORT ${PORT}`);
+    // Load the local model (and its instructions) now, so the first scene prompt doesn't pay for it
+    if (process.env.HELPER_PREFER === 'local') {
+      detectLocalLLM()
+        .then(llm => llm && localChat(llm, { system: SLOT_INSTRUCTION, user: 'ready', maxTokens: 1, timeoutMs: 180000 }).then(() => console.log(`Local model ready: ${llm.model}`)))
+        .catch(err => console.warn('Local model warm-up skipped:', String(err?.message || err).slice(0, 90)));
+    }
   });
 }
 

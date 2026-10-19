@@ -137,7 +137,7 @@ export const localChat = async (
       body: JSON.stringify({
         model: llm.model,
         stream: false,
-        keep_alive: '10m', // keep the model loaded between scenes
+        keep_alive: process.env.LOCAL_LLM_KEEP_ALIVE?.trim() || '30m', // keep the model loaded between scenes
         messages,
         options: { temperature: opts.temperature ?? 0.4, num_predict: opts.maxTokens ?? 400 }
       })
