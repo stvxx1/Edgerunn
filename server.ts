@@ -476,6 +476,28 @@ ACTION: the man lifts a motorbike engine onto a workbench while the woman holds 
 SETTING: cluttered garage, tools on a pegboard, oil stains, a bike on a stand
 CAMERA: wide shot, harsh overhead light`;
 
+// Same four fields, but written as Danbooru-style tags: Pony models read tags far better than sentences
+const PONY_SLOT_INSTRUCTION = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it as image tags for a Pony Diffusion model.
+
+Answer with exactly these four lines and nothing else. Every line is comma-separated Danbooru-style tags, not sentences:
+SUBJECTS: people count tags (1boy, 1girl, 2girls, 2boys, hetero), then for each person an adult age like "30 year old man", hair, build, clothing or nude, cyberware
+ACTION: the pose and action as tags (standing, kneeling, sitting, holding gun, fighting, sex, from behind, missionary, cowgirl position, oral, bent over) and who touches what
+SETTING: place and objects as tags (indoors, bedroom, bed, alley, neon lights, rain, window)
+CAMERA: framing as tags (from side, from above, close-up, cowboy shot, looking at viewer, dim lighting)
+
+Rules:
+- At most 2 people. Pick the single most visual moment; ignore the rest of the scene.
+- Tags for things a camera can see only: no feelings, themes, sounds, backstory or full sentences. Never write "you" or "your".
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it. Name a sex act and its position with plain tags.
+- EVERY person is an adult: always include an adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite to describe a person's age.
+
+Example (only shows the format; never reuse its people, places or words)
+SCENE: At the noodle stall the cook chops a duck while a customer waves a credit chip.
+SUBJECTS: 1boy, 1girl, 45 year old man, stocky, shaved head, apron, 32 year old woman, yellow raincoat
+ACTION: standing, holding cleaver, chopping, holding credit chip, facing each other
+SETTING: outdoors, night market, noodle stall, steam, paper lanterns, wet street
+CAMERA: from side, cowboy shot, warm lantern light`;
+
 // Slot mode (for small local models): the model only fills in four short fields and the code builds
 // the prompt around them, so it can't ramble or forget the quality tags.
 const SLOT_LABELS = ['SUBJECTS', 'ACTION', 'SETTING', 'CAMERA'] as const;
@@ -499,7 +521,9 @@ app.post('/api/scene-prompt', async (req, res) => {
   const isPony = /pony/i.test(String(modelName));
   const withScore = (line: string) => (isPony && !/score_9/i.test(line) ? `score_9, score_8_up, score_7_up, ${line}` : line);
   const isAnime = ANIME_MODEL.test(String(modelName));
-  const closingTags = isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
+  const closingTags = isPony
+    ? (/real|photo|cyber/i.test(String(modelName)) ? 'realistic, photo \\(medium\\), detailed skin, sharp focus' : 'source_anime, highly detailed')
+    : isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
   const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
 
 
@@ -539,7 +563,7 @@ ${sceneText.slice(0, 5000)}`;
   const report: HelperReport = {};
   const written = await generateText({
     contents: slotMode ? slotContents : contents,
-    config: slotMode ? { systemInstruction: SLOT_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
+    config: slotMode ? { systemInstruction: isPony ? PONY_SLOT_INSTRUCTION : SLOT_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
     minimalThinking: true,
     budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~2 min)
     localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000, // a phone or CPU-only model can take a while
