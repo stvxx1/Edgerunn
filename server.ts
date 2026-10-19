@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { CRITICAL_INJURIES, MASTER_GM_SYSTEM_PROMPT, QUICKHACKS_LIBRARY } from './src/data/ruleset';
 import { CheckResult, DamageResult, HUDState } from './src/types';
 import { generateOfflineGMResponse } from './src/utils/localGMGenerator';
@@ -256,6 +256,93 @@ app.post('/api/quickhack', (req, res) => {
   });
 });
 
+// Primary then backup key; a missing key just yields fewer clients instead of throwing
+const geminiClients = (): GoogleGenAI[] =>
+  [false, true].map(isBackup => { try { return getGeminiClient(isBackup); } catch { return null; } }).filter(Boolean) as GoogleGenAI[];
+
+// Image prompt writer: turns the scene on screen into a Stable Diffusion prompt that says who is
+// doing what where, instead of pasting the narration (which SD models can't use).
+const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|hentai|waifu|toon|manga|2d|cartoon/i;
+
+app.post('/api/scene-prompt', async (req, res) => {
+  const { sceneText, recent = [], protagonist = '', modelName = '' } = req.body || {};
+  if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
+
+  const style = ANIME_MODEL.test(String(modelName))
+    ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
+    : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
+
+  const systemInstruction = `You turn one scene from a Cyberpunk RED text roleplay into ONE image-generation prompt for Stable Diffusion 1.5.
+
+Output exactly one line of comma-separated tags and short phrases, 45-65 words, and nothing else: no quotes, labels, markdown or explanation.
+
+Order matters, earlier tags weigh more:
+1. Subjects: how many people, and each one's visible look (build, hair, clothing, cyberware, wounds), taken from the scene, the recent story and the protagonist description.
+2. What they are doing right now: pose, action, expression, who faces whom, what they hold.
+3. Setting: location, key objects, weather.
+4. Lighting and mood.
+5. Camera framing.
+6. Three or four quality tags.
+
+Rules:
+- Draw the single most visual moment of the scene, not a summary of it.
+- Describe people by appearance, never by name ("a scarred man in a grey suit", not "Vane").
+- The protagonist is "you" in the scene text: describe them from the protagonist description.
+- No dialogue, sounds, smells, backstory or abstract feelings; only things a camera could see.
+- Describe the scene faithfully, including violence or intimacy, without softening or adding to it.
+- Every character is an adult (18+). Never describe anyone as a child or a youthful-looking minor.
+${style}`;
+
+  const contents = `PROTAGONIST ("you"): ${String(protagonist).slice(0, 500) || 'a street mercenary'}
+
+RECENT STORY (oldest first, only to learn who and what things look like):
+${(Array.isArray(recent) ? recent : []).map((t: any) => String(t).slice(0, 1200)).join('\n---\n') || '(none)'}
+
+SCENE TO ILLUSTRATE:
+${sceneText.slice(0, 5000)}`;
+
+  let thinkingSupported = true; // flipped off if a model rejects the thinking setting
+  const deadline = Date.now() + 20000; // the client gives up after ~24s, so don't keep working past that
+  for (const client of geminiClients()) {
+    for (const model of ['gemini-3.1-flash-lite', 'gemini-3-flash-preview']) {
+     // 503 "high demand" spikes usually clear in a second or two: retry once before moving on
+     for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt++) {
+      try {
+        const result = await client.models.generateContent({
+          model,
+          contents,
+          // A one-line answer needs no deep reasoning, and thinking tokens count against the cap
+          config: {
+            systemInstruction, temperature: 0.5, maxOutputTokens: 2048, httpOptions: { timeout: 10000 },
+            ...(thinkingSupported ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } } : {})
+          }
+        });
+        if (result.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
+          console.warn(`Scene prompt on ${model} hit the token cap; retrying`);
+          continue;
+        }
+        const line = (result.text || '')
+          .replace(/```[a-z]*/gi, '')
+          .replace(/^(prompt|positive prompt)\s*:\s*/i, '')
+          .replace(/["“”]/g, '')
+          .split('\n').map(l => l.trim()).filter(Boolean).join(', ')
+          .replace(/,\s*,/g, ',')
+          .trim();
+        if (line.length > 20) return res.json({ prompt: line.slice(0, 800), model });
+        break; // answered but unusable (e.g. blocked): try the next model
+      } catch (err: any) {
+        const code = err?.status || err?.code;
+        console.warn(`Scene prompt failed on ${model}:`, code || '', String(err?.message || '').slice(0, 120));
+        if (code === 400 && thinkingSupported) { thinkingSupported = false; continue; } // retry without the thinking setting
+        if (code === 503 || code === 500) { await new Promise(r => setTimeout(r, 1200)); continue; }
+        break;
+      }
+     }
+    }
+  }
+  res.status(502).json({ error: 'Prompt writer unavailable.' });
+});
+
 // Story-so-far summariser: folds older turns into a compact chronicle so /api/chat only needs
 // the summary plus recent turns, instead of the whole campaign every request.
 app.post('/api/summarize', async (req, res) => {
@@ -284,8 +371,7 @@ ${previousSummary || '(none yet: this is the start of the campaign)'}
 NEW TRANSCRIPT:
 ${transcript}`;
 
-  const clients = [false, true].map(isBackup => { try { return getGeminiClient(isBackup); } catch { return null; } }).filter(Boolean) as GoogleGenAI[];
-  for (const client of clients) {
+  for (const client of geminiClients()) {
     for (const model of ['gemini-3.1-flash-lite', 'gemini-3-flash-preview']) {
       try {
         const result = await client.models.generateContent({ model, contents: prompt, config: { temperature: 0.3, maxOutputTokens: 2048 } });

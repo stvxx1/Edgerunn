@@ -6,7 +6,7 @@ export const DEFAULT_NEGATIVE_PROMPT = 'blurry, lowres, bad anatomy, bad hands, 
 // SD's CLIP encoder only weighs roughly the first 75 tokens heavily, so keep the scene excerpt tight.
 const MAX_SCENE_CHARS = 420;
 
-const stripMarkup = (text: string) =>
+export const stripMarkup = (text: string) =>
   text
     .replace(/\[[A-Z_ ]+:[\s\S]*?\]/g, ' ') // [HIDDEN: ...], [CHOICES_JSON: ...], [CHECK: ...] etc.
     .replace(/\[[^\]]*\]/g, ' ')
@@ -41,4 +41,28 @@ export const buildScenePrompt = (sceneText: string, hud?: Partial<HUDState>, sty
   if (look) parts.push(`the protagonist: ${clipToSentences(stripMarkup(look), 160)}`);
   if (styleTags.trim()) parts.push(styleTags.trim());
   return parts.map(p => p.replace(/[.,;\s]+$/, '')).filter(Boolean).join(', ');
+};
+
+// Ask the server (Gemini) to write a Stable Diffusion prompt that says who is doing what where.
+// Throws when the writer is unavailable so the caller can fall back to buildScenePrompt.
+export const requestScenePrompt = async (args: {
+  sceneText: string;
+  recent: string[];
+  protagonist?: string;
+  modelName?: string;
+}): Promise<string> => {
+  const res = await fetch('/api/scene-prompt', {
+    method: 'POST',
+    signal: AbortSignal.timeout(24000), // Gemini can stall under load: fall back to the basic summary
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sceneText: stripMarkup(args.sceneText),
+      recent: args.recent.map(t => stripMarkup(t).slice(0, 1200)),
+      protagonist: args.protagonist ? stripMarkup(args.protagonist) : '',
+      modelName: args.modelName || ''
+    })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.prompt) throw new Error(body.error || `Prompt writer failed (${res.status})`);
+  return body.prompt as string;
 };

@@ -651,6 +651,11 @@ export const GMChat: React.FC<GMChatProps> = ({
             messageId={visualiseTarget.id}
             sceneText={typeof visualiseTarget.text === 'string' ? visualiseTarget.text : String(visualiseTarget.text ?? '')}
             hudState={hudState}
+            context={(() => {
+              // The last few turns before this scene: that's where NPC looks were described
+              const i = messages.findIndex(m => m.id === visualiseTarget.id);
+              return messages.slice(Math.max(0, i - 4), Math.max(0, i)).filter(m => m.sender !== 'system').map(m => String(m.text ?? ''));
+            })()}
             onClose={() => setVisualiseTarget(null)}
             onGenerate={sceneImages.generate}
           />

@@ -1,13 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud } from 'lucide-react';
 import { HUDState } from '../types';
-import { buildScenePrompt, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { buildScenePrompt, requestScenePrompt, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
 interface SceneVisualiserProps {
   messageId: string;
   sceneText: string;
   hudState: HUDState;
+  context: string[]; // the few messages before this one, so NPC looks can be recalled
   onClose: () => void;
   onGenerate: (req: SceneImageRequest) => Promise<void>;
 }
@@ -77,8 +78,12 @@ const saveSettings = (s: VisualiserSettings) => {
   }
 };
 
-export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sceneText, hudState, onClose, onGenerate }) => {
+export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sceneText, hudState, context, onClose, onGenerate }) => {
+  // Starts as the plain summary so something is there instantly; Gemini's rewrite replaces it
   const [prompt, setPrompt] = useState(() => buildScenePrompt(sceneText, hudState));
+  const [promptSource, setPromptSource] = useState<'writing' | 'ai' | 'basic'>('writing');
+  const userEdited = useRef(false);
+  const startedFor = useRef<string | null>(null);
   const [settings, setSettings] = useState<VisualiserSettings>(loadSettings);
   const [models, setModels] = useState<HordeModelOption[]>([]);
   const [hasApiKey, setHasApiKey] = useState(true);
@@ -107,6 +112,30 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
       .catch(() => !stale && setModels([]));
     return () => { stale = true; };
   }, [settings.backend, comfyAvailable]);
+
+  const writePrompt = async (force: boolean) => {
+    if (force) userEdited.current = false;
+    setPromptSource('writing');
+    try {
+      const written = await requestScenePrompt({
+        sceneText,
+        recent: context,
+        protagonist: hudState.customDescription,
+        modelName: settings.models[settings.backend]
+      });
+      if (!userEdited.current) setPrompt(written);
+      setPromptSource('ai');
+    } catch {
+      if (!userEdited.current) setPrompt(buildScenePrompt(sceneText, hudState));
+      setPromptSource('basic');
+    }
+  };
+
+  useEffect(() => {
+    if (startedFor.current === messageId) return; // StrictMode runs effects twice in dev
+    startedFor.current = messageId;
+    writePrompt(false);
+  }, [messageId]);
 
   const update = (patch: Partial<VisualiserSettings>) => {
     setSettings(prev => {
@@ -189,14 +218,19 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         </div>
 
         <label className="mb-1 flex items-center justify-between text-neutral-500">
-          <span>PROMPT</span>
-          <button onClick={() => setPrompt(buildScenePrompt(sceneText, hudState))} className="flex items-center gap-1 hover:text-fuchsia-300">
-            <RotateCcw className="h-3 w-3" /> rebuild from scene
+          <span>
+            PROMPT
+            <span className={`ml-2 text-[10px] ${promptSource === 'ai' ? 'text-fuchsia-400' : promptSource === 'basic' ? 'text-yellow-500/80' : 'text-neutral-500'}`}>
+              {promptSource === 'writing' ? 'writing from the scene…' : promptSource === 'ai' ? '✨ written from the scene' : 'basic summary (prompt writer unavailable)'}
+            </span>
+          </span>
+          <button onClick={() => writePrompt(true)} disabled={promptSource === 'writing'} className="flex items-center gap-1 hover:text-fuchsia-300 disabled:opacity-50">
+            <RotateCcw className={`h-3 w-3 ${promptSource === 'writing' ? 'animate-spin' : ''}`} /> rewrite from scene
           </button>
         </label>
         <textarea
           value={prompt}
-          onChange={e => setPrompt(e.target.value)}
+          onChange={e => { userEdited.current = true; setPrompt(e.target.value); }}
           rows={6}
           className="mb-3 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-2 font-sans text-sm text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
         />
@@ -321,11 +355,11 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
 
         <button
           onClick={handleGenerate}
-          disabled={submitting || !prompt.trim()}
+          disabled={submitting || !prompt.trim() || promptSource === 'writing'}
           className="flex w-full items-center justify-center gap-2 rounded border border-fuchsia-600 bg-fuchsia-950/60 py-2 font-bold tracking-wider text-fuchsia-300 transition hover:bg-fuchsia-900/60 disabled:opacity-50"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
-          {submitting ? 'UPLINKING...' : 'GENERATE'}
+          {submitting ? 'UPLINKING...' : promptSource === 'writing' ? 'WRITING PROMPT...' : 'GENERATE'}
         </button>
       </div>
     </div>
