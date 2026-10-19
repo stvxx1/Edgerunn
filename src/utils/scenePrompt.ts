@@ -1,6 +1,15 @@
 
 // Deliberately setting-neutral: rain, neon and so on come from the scene itself, so an indoor scene doesn't get wet streets
 export const DEFAULT_STYLE_TAGS = 'cyberpunk, cinematic lighting, highly detailed, sharp focus';
+// Pony Diffusion models are trained on quality "score" tags: without them the output is poor
+export const PONY_SCORE_TAGS = 'score_9, score_8_up, score_7_up';
+export const PONY_NEGATIVE_TAGS = 'score_6, score_5, score_4';
+export const isPonyModel = (name?: string) => /pony/i.test(name || '');
+export const withPonyScore = (prompt: string, model?: string) =>
+  isPonyModel(model) && !/score_9/i.test(prompt) ? `${PONY_SCORE_TAGS}, ${prompt}` : prompt;
+export const withPonyNegative = (negative: string, model?: string) =>
+  isPonyModel(model) && !/score_6/i.test(negative) ? `${PONY_NEGATIVE_TAGS}, ${negative}` : negative;
+
 export const DEFAULT_NEGATIVE_PROMPT = 'blurry, lowres, bad anatomy, bad hands, extra fingers, deformed, watermark, signature, text, jpeg artifacts';
 
 // SD's CLIP encoder only weighs roughly the first 75 tokens heavily, so keep the scene excerpt tight.

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud, Film } from 'lucide-react';
 import { HUDState } from '../types';
-import { buildScenePrompt, requestScenePrompt, requestSceneBeats, offlineBeats, composeFramePrompt, describePromptFallback, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { buildScenePrompt, requestScenePrompt, requestSceneBeats, offlineBeats, composeFramePrompt, describePromptFallback, withPonyScore, withPonyNegative, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
 import { describeCharacterLook } from '../utils/characterLook';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
@@ -165,8 +165,8 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
       await onGenerate({
         messageId,
         backend: settings.backend,
-        prompt,
-        negativePrompt: settings.negativePrompt,
+        prompt: withPonyScore(prompt, model),
+        negativePrompt: withPonyNegative(settings.negativePrompt, model),
         model: model || undefined,
         nsfw: settings.nsfw,
         width,
@@ -222,8 +222,8 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         await onGenerate({
           messageId,
           backend: settings.backend,
-          prompt: composeFramePrompt(beats[frame], sceneText, characterLook),
-          negativePrompt: settings.negativePrompt,
+          prompt: withPonyScore(composeFramePrompt(beats[frame], sceneText, characterLook), model),
+          negativePrompt: withPonyNegative(settings.negativePrompt, model),
           model: model || undefined,
           nsfw: settings.nsfw,
           width,

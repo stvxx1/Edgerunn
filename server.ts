@@ -496,6 +496,8 @@ app.post('/api/scene-prompt', async (req, res) => {
     ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
     : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
 
+  const isPony = /pony/i.test(String(modelName));
+  const withScore = (line: string) => (isPony && !/score_9/i.test(line) ? `score_9, score_8_up, score_7_up, ${line}` : line);
   const isAnime = ANIME_MODEL.test(String(modelName));
   const closingTags = isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
   const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
@@ -548,7 +550,7 @@ ${sceneText.slice(0, 5000)}`;
       const slots = parseSlots(text);
       if (slots) {
         const built = cleanPromptTags(depersonalise([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA].filter(Boolean).join(', '), String(protagonist)) + ', ' + closingTags);
-        return built.length > 20 ? built : null;
+        return built.length > 20 ? withScore(built) : null;
       }
       if (slotMode) {
         console.warn(`Prompt writer reply not in the four-field format: ${JSON.stringify(text.slice(0, 220))}`);
@@ -564,7 +566,7 @@ ${sceneText.slice(0, 5000)}`;
         .replace(/["“”]/g, '')
         .trim();
       line = cleanPromptTags(line);
-      return line.length > 20 ? line : null;
+      return line.length > 20 ? withScore(line) : null;
     }
   });
   if (written) return res.json({ prompt: written.text, model: written.model });
