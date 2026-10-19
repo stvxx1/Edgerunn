@@ -482,6 +482,53 @@ ${sceneText.slice(0, 5000)}`;
   res.status(502).json({ error: 'Prompt writer unavailable.', quota: report.quota, retryAfterSec: report.retryAfterSec });
 });
 
+// Storyboard beats: splits one scene into a few consecutive "what a camera sees" moments. The client
+// adds the character's look and the setting to each, so the model only has to describe the action.
+app.post('/api/scene-beats', async (req, res) => {
+  const { sceneText, recent = [], protagonist = '' } = req.body || {};
+  const count = Math.min(6, Math.max(2, Number(req.body?.count) || 4));
+  if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
+
+  const systemInstruction = `You split one scene from a Cyberpunk RED text roleplay into ${count} consecutive storyboard shots.
+
+Output exactly ${count} lines, one per shot, in story order, and nothing else: no numbering, labels, quotes, markdown or explanation.
+
+Each line is a short visual phrase of 8-16 words: who is doing what, as a camera would see it. Make the shots different from each other (a change of pose, action, or what is in frame), so they read as a sequence.
+
+Rules:
+- Describe people by role or appearance, never by name ("the scarred man", "you" for the protagonist).
+- No dialogue, sounds, smells or feelings; only visible things.
+- Show the events faithfully, including violence or intimacy, without softening or adding to them.
+- Every character is an adult (18+).`;
+
+  const contents = `PROTAGONIST ("you"): ${String(protagonist).slice(0, 500) || 'a street mercenary'}
+
+RECENT STORY (only to learn who is who):
+${(Array.isArray(recent) ? recent : []).slice(-2).map((t: any) => String(t).slice(0, 700)).join('\n---\n') || '(none)'}
+
+SCENE TO SPLIT INTO ${count} SHOTS:
+${sceneText.slice(0, 5000)}`;
+
+  const report: HelperReport = {};
+  const written = await generateText({
+    contents,
+    config: { systemInstruction, temperature: 0.6, maxOutputTokens: 2048 },
+    minimalThinking: true,
+    budgetMs: 14000,
+    localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 90000,
+    preferLocal: process.env.HELPER_PREFER === 'local',
+    report,
+    accept: text => {
+      const lines = text.replace(/```[a-z]*/gi, '').split('\n')
+        .map(l => l.replace(/\*+/g, '').replace(/^\s*(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/^[-•]\s*/, '').replace(/["“”]/g, '').trim())
+        .filter(l => l.split(/\s+/).length >= 3 && !/^(here('|\s?i)s|sure|okay|certainly|note)/i.test(l));
+      return lines.length >= count ? lines.slice(0, count).map(l => l.replace(/[.;:,]+$/, '')).join('\n') : null;
+    }
+  });
+  if (written) return res.json({ beats: written.text.split('\n'), model: written.model });
+  res.status(502).json({ error: 'Beat writer unavailable.', quota: report.quota, retryAfterSec: report.retryAfterSec });
+});
+
 // Story-so-far summariser: folds older turns into a compact chronicle so /api/chat only needs
 // the summary plus recent turns, instead of the whole campaign every request.
 app.post('/api/summarize', async (req, res) => {

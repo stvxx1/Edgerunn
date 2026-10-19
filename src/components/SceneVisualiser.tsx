@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud } from 'lucide-react';
+import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud, Film } from 'lucide-react';
 import { HUDState } from '../types';
-import { buildScenePrompt, requestScenePrompt, describePromptFallback, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { buildScenePrompt, requestScenePrompt, requestSceneBeats, offlineBeats, composeFramePrompt, describePromptFallback, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
 import { describeCharacterLook } from '../utils/characterLook';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
@@ -42,6 +42,7 @@ interface VisualiserSettings {
   sampler: string;
   clipSkip: number;
   negativePrompt: string;
+  storyboardFrames: number;
 }
 
 const SETTINGS_KEY = 'edgerunn.sceneVisualiser.settings';
@@ -54,7 +55,8 @@ const DEFAULT_SETTINGS: VisualiserSettings = {
   cfg: 6,
   sampler: 'dpmpp_2m',
   clipSkip: 1,
-  negativePrompt: DEFAULT_NEGATIVE_PROMPT
+  negativePrompt: DEFAULT_NEGATIVE_PROMPT,
+  storyboardFrames: 4
 };
 
 // Samplers offered for local ComfyUI runs ('lcm' is for LCM-distilled models)
@@ -94,6 +96,9 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
   const [comfyAvailable, setComfyAvailable] = useState<boolean | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [beats, setBeats] = useState<string[] | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [beatNote, setBeatNote] = useState('');
 
   useEffect(() => {
     fetch('/api/image-backends')
@@ -175,6 +180,66 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
       onClose();
     } catch (err: any) {
       setError(err?.message || 'Failed to submit image job.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Storyboard: split the scene into beats (AI, or a no-model fallback), let the player edit them, then
+  // render one frame per beat. Same seed, character look, setting and style on every frame.
+  const planStoryboard = async () => {
+    setPlanning(true);
+    setError(null);
+    setBeatNote('');
+    const count = settings.storyboardFrames;
+    try {
+      const written = await requestSceneBeats({ sceneText, recent: context, protagonist: characterLook, count });
+      setBeats(written.slice(0, count));
+      setBeatNote('✨ written from the scene');
+    } catch (err) {
+      const quick = offlineBeats(sceneText, count);
+      if (!quick.length) {
+        setError('Could not split this scene into shots. Try a longer scene.');
+      } else {
+        setBeats(quick);
+        setBeatNote(`quick split: ${describePromptFallback(err)}`);
+      }
+    } finally {
+      setPlanning(false);
+    }
+  };
+
+  const generateStoryboard = async () => {
+    if (!beats?.length) return;
+    setSubmitting(true);
+    setError(null);
+    const { width, height } = ASPECTS[settings.aspect];
+    const storyboardId = `sb_${Date.now()}`;
+    const seed = String(Math.floor(Math.random() * 2 ** 31));
+    try {
+      for (let frame = 0; frame < beats.length; frame++) {
+        if (!beats[frame].trim()) continue;
+        await onGenerate({
+          messageId,
+          backend: settings.backend,
+          prompt: composeFramePrompt(beats[frame], sceneText, characterLook),
+          negativePrompt: settings.negativePrompt,
+          model: model || undefined,
+          nsfw: settings.nsfw,
+          width,
+          height,
+          steps: Math.max(settings.backend === 'comfyui' ? 1 : 10, settings.steps),
+          cfgScale: settings.cfg,
+          sampler: settings.sampler,
+          clipSkip: settings.clipSkip,
+          seed,
+          storyboardId,
+          frame
+        });
+      }
+      onClose();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to submit the storyboard frames.');
     } finally {
       setSubmitting(false);
     }
@@ -372,6 +437,63 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
           {submitting ? 'UPLINKING...' : promptSource === 'writing' ? 'WRITING PROMPT...' : 'GENERATE'}
         </button>
+
+        <div className="mt-4 border-t border-neutral-800 pt-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="flex items-center gap-2 font-bold tracking-wider text-fuchsia-400"><Film className="h-3.5 w-3.5" /> STORYBOARD</span>
+            <label className="flex items-center gap-2 text-neutral-500">
+              frames
+              <select
+                value={settings.storyboardFrames}
+                onChange={e => { update({ storyboardFrames: Number(e.target.value) }); setBeats(null); }}
+                className="rounded border border-neutral-800 bg-neutral-900 p-1 text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
+              >
+                {[3, 4, 5, 6].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+          </div>
+          <p className="mb-2 text-[10px] leading-snug text-neutral-500">
+            Splits the scene into shots and renders one picture each, with the same character look and seed, then you can play them as a slideshow or save a GIF.
+            {settings.backend === 'horde' ? ' On AI Horde each frame waits in the queue, so it takes a while.' : ''}
+          </p>
+          {!beats ? (
+            <button
+              onClick={planStoryboard}
+              disabled={planning || submitting}
+              className="flex w-full items-center justify-center gap-2 rounded border border-neutral-700 bg-neutral-900 py-2 tracking-wider text-neutral-200 transition hover:border-fuchsia-500 hover:text-fuchsia-300 disabled:opacity-50"
+            >
+              {planning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
+              {planning ? 'SPLITTING THE SCENE...' : `PLAN ${settings.storyboardFrames}-FRAME STORYBOARD`}
+            </button>
+          ) : (
+            <>
+              <p className={`mb-1 text-[10px] ${beatNote.startsWith('✨') ? 'text-fuchsia-400' : 'text-yellow-500/80'}`}>{beatNote} · edit any shot</p>
+              <div className="mb-2 flex flex-col gap-1">
+                {beats.map((beat, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="w-4 shrink-0 text-right text-neutral-500">{i + 1}</span>
+                    <input
+                      value={beat}
+                      onChange={e => setBeats(prev => (prev ? prev.map((b, j) => (j === i ? e.target.value : b)) : prev))}
+                      className="w-full rounded border border-neutral-800 bg-neutral-900 p-1.5 font-sans text-xs text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={generateStoryboard}
+                  disabled={submitting || !beats.some(b => b.trim())}
+                  className="flex flex-1 items-center justify-center gap-2 rounded border border-fuchsia-600 bg-fuchsia-950/60 py-2 font-bold tracking-wider text-fuchsia-300 transition hover:bg-fuchsia-900/60 disabled:opacity-50"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Film className="h-4 w-4" />}
+                  {submitting ? 'UPLINKING...' : `GENERATE ${beats.filter(b => b.trim()).length} FRAMES`}
+                </button>
+                <button onClick={() => { setBeats(null); setBeatNote(''); }} disabled={submitting} className="rounded border border-neutral-700 px-3 text-neutral-400 hover:text-white disabled:opacity-50">re-plan</button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { Download, Loader2, Trash2, X, AlertTriangle, EyeOff } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Download, Loader2, Trash2, X, AlertTriangle, EyeOff, Play, Pause, ChevronLeft, ChevronRight, Film } from 'lucide-react';
 import { SceneImage, SceneImageJob } from '../utils/useSceneImages';
+import { makeGif } from '../utils/makeGif';
 
 interface GeneratedImageGalleryProps {
   images: SceneImage[];
@@ -16,14 +17,91 @@ const jobLabel = (job: SceneImageJob) => {
   return job.error || job.state;
 };
 
+// Plays a storyboard's frames in order; arrows step through them, the GIF button saves a looping copy
+const StoryboardPlayer: React.FC<{ frames: SceneImage[]; onClose: () => void }> = ({ frames, onClose }) => {
+  const [index, setIndex] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!playing || frames.length < 2) return;
+    const t = setInterval(() => setIndex(i => (i + 1) % frames.length), 1400);
+    return () => clearInterval(t);
+  }, [playing, frames.length]);
+
+  const saveGif = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const blob = await makeGif(frames.map(f => f.url));
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `edgerunn_storyboard_${Date.now()}.gif`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (err: any) {
+      setError(err?.message || 'GIF export failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const frame = frames[Math.min(index, frames.length - 1)];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={onClose}>
+      <div className="flex max-h-full max-w-4xl flex-col gap-2" onClick={e => e.stopPropagation()}>
+        <img src={frame.url} alt={frame.prompt} className="max-h-[70vh] w-auto rounded-lg object-contain" />
+        <p className="max-h-20 overflow-y-auto font-sans text-xs text-neutral-400">{frame.prompt}</p>
+        <div className="flex items-center gap-3 font-mono text-[10px] text-neutral-400">
+          <button onClick={() => { setPlaying(false); setIndex(i => (i - 1 + frames.length) % frames.length); }} className="hover:text-white"><ChevronLeft className="h-4 w-4" /></button>
+          <button onClick={() => setPlaying(p => !p)} className="hover:text-white">{playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>
+          <button onClick={() => { setPlaying(false); setIndex(i => (i + 1) % frames.length); }} className="hover:text-white"><ChevronRight className="h-4 w-4" /></button>
+          <span>frame {Math.min(index, frames.length - 1) + 1} / {frames.length}</span>
+          <button onClick={saveGif} disabled={busy} className="ml-auto flex items-center gap-1 text-cyan-400 hover:text-cyan-300 disabled:opacity-50">
+            {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Film className="h-3 w-3" />} {busy ? 'building GIF…' : 'save as GIF'}
+          </button>
+          <button onClick={onClose} className="hover:text-white"><X className="h-4 w-4" /></button>
+        </div>
+        {error && <p className="text-[10px] text-red-400">{error}</p>}
+      </div>
+    </div>
+  );
+};
+
 export const GeneratedImageGallery: React.FC<GeneratedImageGalleryProps> = ({ images, jobs = [], onCancelJob, onDismissJob, onRemoveImage }) => {
   const [expanded, setExpanded] = useState<SceneImage | null>(null);
+  const [playingBoard, setPlayingBoard] = useState<string | null>(null);
   if (images.length === 0 && jobs.length === 0) return null;
+
+  const singles = images.filter(img => !img.storyboardId);
+  const boardIds: string[] = Array.from(new Set<string>(images.flatMap(img => (img.storyboardId ? [img.storyboardId] : []))));
+  const boardFrames = (id: string) => images.filter(img => img.storyboardId === id).sort((a, b) => (a.frame ?? 0) - (b.frame ?? 0));
 
   return (
     <>
+      {boardIds.map(id => {
+        const frames = boardFrames(id);
+        const pending = jobs.filter(j => j.storyboardId === id && j.state !== 'faulted' && j.state !== 'impossible' && j.state !== 'error').length;
+        return (
+          <div key={id} className="mt-2 w-full max-w-2xl rounded-lg border border-fuchsia-900/60 bg-neutral-950/60 p-2">
+            <div className="mb-1 flex items-center justify-between font-mono text-[10px] text-fuchsia-300">
+              <span className="flex items-center gap-1"><Film className="h-3 w-3" /> STORYBOARD · {frames.length} frame{frames.length === 1 ? '' : 's'}{pending ? ` · ${pending} still rendering` : ''}</span>
+              <button onClick={() => setPlayingBoard(id)} className="flex items-center gap-1 rounded border border-fuchsia-700 px-2 py-0.5 hover:bg-fuchsia-900/40"><Play className="h-3 w-3" /> play / GIF</button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto">
+              {frames.map(img => (
+                <button key={img.id} onClick={() => setExpanded(img)} className="relative w-28 shrink-0 overflow-hidden rounded border border-neutral-700 hover:border-fuchsia-500">
+                  <img src={img.url} alt={img.prompt} className="aspect-[2/3] w-full object-cover" />
+                  <span className="absolute left-1 top-1 rounded bg-black/80 px-1 font-mono text-[9px] text-neutral-300">{(img.frame ?? 0) + 1}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
       <div className="mt-2 grid w-full max-w-2xl grid-cols-2 gap-2 sm:grid-cols-3">
-        {images.map(img => (
+        {singles.map(img => (
           <button
             key={img.id}
             onClick={() => setExpanded(img)}
@@ -48,6 +126,7 @@ export const GeneratedImageGallery: React.FC<GeneratedImageGalleryProps> = ({ im
               }`}
             >
               {failed ? <AlertTriangle className="h-5 w-5" /> : <Loader2 className="h-5 w-5 animate-spin" />}
+              {job.frame !== undefined && <span className="text-neutral-400">frame {job.frame + 1}</span>}
               <span>{jobLabel(job)}</span>
               {!failed && job.error && <span className="text-[9px] text-yellow-500/80">{job.error}</span>}
               <button
@@ -60,6 +139,10 @@ export const GeneratedImageGallery: React.FC<GeneratedImageGalleryProps> = ({ im
           );
         })}
       </div>
+
+      {playingBoard && boardFrames(playingBoard).length > 0 && (
+        <StoryboardPlayer frames={boardFrames(playingBoard)} onClose={() => setPlayingBoard(null)} />
+      )}
 
       {expanded && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={() => setExpanded(null)}>

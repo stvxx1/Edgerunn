@@ -9,6 +9,8 @@ export interface SceneImage {
   seed: string;
   censored: boolean;
   createdAt: number;
+  storyboardId?: string; // frames of one storyboard share this id
+  frame?: number;        // position in the storyboard, from 0
 }
 
 export interface SceneImageJob {
@@ -20,6 +22,8 @@ export interface SceneImageJob {
   queuePosition: number;
   waitTime: number;
   error?: string;
+  storyboardId?: string;
+  frame?: number;
 }
 
 export type ImageBackend = 'horde' | 'comfyui';
@@ -37,6 +41,9 @@ export interface SceneImageRequest {
   cfgScale?: number;
   sampler?: string;
   clipSkip?: number;
+  seed?: string;
+  storyboardId?: string;
+  frame?: number;
 }
 
 const POLL_MS = 4000;
@@ -80,7 +87,9 @@ export const useSceneImages = () => {
             model: img.model || job.model,
             seed: img.seed,
             censored: img.censored,
-            createdAt: Date.now()
+            createdAt: Date.now(),
+            storyboardId: job.storyboardId,
+            frame: job.frame
           }));
           setImages(prev => [...prev, ...fresh]);
           dropJob(job.id);
@@ -114,7 +123,9 @@ export const useSceneImages = () => {
       model: req.model || 'any',
       state: 'queued',
       queuePosition: 0,
-      waitTime: 0
+      waitTime: 0,
+      storyboardId: req.storyboardId,
+      frame: req.frame
     };
     setJobs(prev => [...prev, job]);
     poll(job);
