@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud } from 'lucide-react';
 import { HUDState } from '../types';
-import { buildScenePrompt, requestScenePrompt, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { buildScenePrompt, requestScenePrompt, describePromptFallback, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
 import { describeCharacterLook } from '../utils/characterLook';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
@@ -85,6 +85,7 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
   const characterLook = useMemo(() => describeCharacterLook(hudState), [hudState]);
   const [prompt, setPrompt] = useState(() => buildScenePrompt(sceneText, characterLook));
   const [promptSource, setPromptSource] = useState<'writing' | 'ai' | 'basic'>('writing');
+  const [fallbackNote, setFallbackNote] = useState('');
   const userEdited = useRef(false);
   const startedFor = useRef<string | null>(null);
   const [settings, setSettings] = useState<VisualiserSettings>(loadSettings);
@@ -129,8 +130,9 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
       });
       if (!userEdited.current) setPrompt(written);
       setPromptSource('ai');
-    } catch {
+    } catch (err) {
       if (!userEdited.current) setPrompt(buildScenePrompt(sceneText, characterLook));
+      setFallbackNote(describePromptFallback(err));
       setPromptSource('basic');
     }
   };
@@ -225,7 +227,7 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           <span>
             PROMPT
             <span className={`ml-2 text-[10px] ${promptSource === 'ai' ? 'text-fuchsia-400' : promptSource === 'basic' ? 'text-yellow-500/80' : 'text-neutral-500'}`}>
-              {promptSource === 'writing' ? 'writing from the scene…' : promptSource === 'ai' ? '✨ written from the scene' : 'quick summary (AI prompt writer unavailable; edit freely)'}
+              {promptSource === 'writing' ? 'writing from the scene…' : promptSource === 'ai' ? '✨ written from the scene' : `quick summary: ${fallbackNote || 'AI prompt writer unavailable'}. Edit freely.`}
             </span>
           </span>
           <button onClick={() => writePrompt(true)} disabled={promptSource === 'writing'} className="flex items-center gap-1 hover:text-fuchsia-300 disabled:opacity-50">
