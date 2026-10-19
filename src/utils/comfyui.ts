@@ -89,8 +89,12 @@ const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => {
   // Clip skip 2 (common for anime SD1.5 models) = stop at the second-to-last CLIP layer
   const useClipSkip = (req.clipSkip ?? 1) > 1;
   const clip: [string, number] = useClipSkip ? ['10', 0] : ['4', 1];
+  // LCM-distilled models: ComfyUI's LCM example adds ModelSamplingDiscrete(lcm) ahead of the sampler
+  const isLcm = sampler === 'lcm';
+  const samplerModel: [string, number] = isLcm ? ['11', 0] : ['4', 0];
   return {
   '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
+  ...(isLcm ? { '11': { class_type: 'ModelSamplingDiscrete', inputs: { model: ['4', 0], sampling: 'lcm', zsnr: false } } } : {}),
   ...(useClipSkip ? { '10': { class_type: 'CLIPSetLastLayer', inputs: { clip: ['4', 1], stop_at_clip_layer: -Math.min(4, req.clipSkip as number) } } } : {}),
   '5': { class_type: 'EmptyLatentImage', inputs: { width: snap(req.width, 832), height: snap(req.height, 1216), batch_size: 1 } },
   '6': { class_type: 'CLIPTextEncode', inputs: { text: req.prompt.trim(), clip } },
@@ -104,7 +108,7 @@ const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => {
       sampler_name: sampler,
       scheduler: schedulerFor(sampler),
       denoise: 1,
-      model: ['4', 0],
+      model: samplerModel,
       positive: ['6', 0],
       negative: ['7', 0],
       latent_image: ['5', 0]

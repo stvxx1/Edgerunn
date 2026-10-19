@@ -209,6 +209,17 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           className="mb-3 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-2 font-sans text-xs text-neutral-400 focus:border-fuchsia-500 focus:outline-none"
         />
 
+        {isLocal && (
+          <button
+            type="button"
+            onClick={() => update({ steps: 10, cfg: 1, sampler: 'lcm', clipSkip: 1 })}
+            className="mb-3 w-full rounded border border-neutral-700 bg-neutral-900 py-1.5 text-[11px] text-neutral-300 transition hover:border-fuchsia-500 hover:text-fuchsia-300"
+            title="For LCM / Lightning / 'Fast' models that recommend CFG 1 and 8-15 steps"
+          >
+            ⚡ FAST-MODEL PRESET: 10 steps · CFG 1 · LCM sampler
+          </button>
+        )}
+
         <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-neutral-500">MODEL</label>
