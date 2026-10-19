@@ -162,6 +162,7 @@ export const geminiResetTimeLocal = (now = new Date()): string => {
 // One short line for the prompt box when the AI writer couldn't be used
 export const describePromptFallback = (err: any): string => {
   if (err?.quota === 'daily') return `Gemini's free daily limit is used up (resets about ${geminiResetTimeLocal()})`;
+  if (err?.quota === 'credits') return 'Gemini prepaid credits are used up (add funds in AI Studio billing)';
   if (err?.quota === 'minute') return `Gemini is rate-limited${err.retryAfterSec ? `, try again in ${err.retryAfterSec}s` : ''}`;
   if (err?.quota === 'unknown') return 'Gemini quota used up for now';
   return 'AI prompt writer unavailable';

@@ -364,7 +364,12 @@ const generateText = async (opts: {
               rejectsThinking.add(model); // only this model; retry it without the setting
               continue;
             }
-            if (code === 429) {
+            if (code === 402) {
+              // a paid key whose prepaid balance is $0: skip it for a while, and say so
+              const info: QuotaInfo = { kind: 'credits' };
+              quotaBook.mark(id, info);
+              quotaHits.push(info);
+            } else if (code === 429) {
               const info = parseQuota(err);
               quotaBook.mark(id, info);
               quotaHits.push(info);

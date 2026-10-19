@@ -4,7 +4,8 @@
 
 // ---- Gemini quota awareness ----------------------------------------------------------------
 
-export type QuotaKind = 'daily' | 'minute' | 'unknown';
+// 'credits' is a prepaid balance that has run out (HTTP 402), as opposed to a free-tier rate limit
+export type QuotaKind = 'daily' | 'minute' | 'credits' | 'unknown';
 export interface QuotaInfo {
   kind: QuotaKind;
   retryAfterSec?: number;
@@ -24,7 +25,7 @@ export class CooldownBook {
   private until = new Map<string, { at: number; info: QuotaInfo }>();
 
   mark(id: string, info: QuotaInfo, now = Date.now()) {
-    const ms = info.kind === 'daily' ? 15 * 60_000 : (info.retryAfterSec ?? 60) * 1000;
+    const ms = info.kind === 'daily' || info.kind === 'credits' ? 15 * 60_000 : (info.retryAfterSec ?? 60) * 1000;
     this.until.set(id, { at: now + Math.max(ms, 5_000), info });
   }
 
@@ -42,7 +43,7 @@ export class CooldownBook {
 // The most informative summary of several quota hits: a daily limit beats a minute limit
 export const worstQuota = (hits: QuotaInfo[]): QuotaInfo | null => {
   if (!hits.length) return null;
-  const rank: Record<QuotaKind, number> = { daily: 3, minute: 2, unknown: 1 };
+  const rank: Record<QuotaKind, number> = { daily: 4, credits: 3, minute: 2, unknown: 1 };
   const worst = hits.reduce((a, b) => (rank[b.kind] > rank[a.kind] ? b : a));
   const retry = hits.map(h => h.retryAfterSec).filter((n): n is number => typeof n === 'number');
   return { kind: worst.kind, retryAfterSec: retry.length ? Math.min(...retry) : undefined };
