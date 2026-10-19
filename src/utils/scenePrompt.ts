@@ -99,6 +99,55 @@ const pickActionSentences = (text: string, count: number): string[] => {
     .map(x => capAtClause(dropFiller(toStatement(x.sentence)), 26));
 };
 
+// ---- Storyboard ------------------------------------------------------------------------------
+// A storyboard is several frames of one scene. Every frame shares the same character look, setting
+// tags and style, so the person stays recognisable; only the "beat" (what is happening) changes.
+
+export const settingTags = (sceneText: string) =>
+  SETTING_TAGS.filter(([re]) => re.test(stripMarkup(sceneText))).map(([, tag]) => tag).slice(0, 5);
+
+// No model: cut the scene into `count` consecutive stretches and take the most visual sentence of each
+export const offlineBeats = (sceneText: string, count: number): string[] => {
+  const clean = stripMarkup(sceneText).replace(/["“][^"”]*["”]/g, ' ');
+  const sentences = (clean.match(/[^.!?]+[.!?]*/g) || []).map(x => x.trim()).filter(x => x.length > 12 && !x.endsWith('?'));
+  if (!sentences.length) return [];
+  const score = (x: string) => (x.match(VISUAL_VERB) || []).length * 2 + (x.match(BODY_OR_GEAR) || []).length - (x.match(SENSORY_ONLY) || []).length;
+  const beats: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const from = Math.floor((i * sentences.length) / count);
+    const to = Math.max(from + 1, Math.floor(((i + 1) * sentences.length) / count));
+    const group = sentences.slice(from, to);
+    const best = group.reduce((a, b) => (score(b) > score(a) ? b : a));
+    beats.push(capAtClause(dropFiller(toStatement(best)), 18));
+  }
+  return beats;
+};
+
+// One frame's prompt: who they are (shared) + this beat + where (shared) + style (shared)
+export const composeFramePrompt = (beat: string, sceneText: string, look?: string, styleTags = DEFAULT_STYLE_TAGS) =>
+  [look ? clipToSentences(stripMarkup(look), 260) : '', beat.replace(/\byour\b/gi, 'their').replace(/\byou\b/gi, 'the character'), settingTags(sceneText).join(', '), styleTags.trim()]
+    .map(p => p.replace(/[.,;\s]+$/, '')).filter(Boolean).join(', ');
+
+// Ask the server (Gemini, or a local model) to split the scene into short visual beats
+export const requestSceneBeats = async (args: { sceneText: string; recent: string[]; protagonist?: string; count: number }): Promise<string[]> => {
+  const res = await fetch('/api/scene-beats', {
+    method: 'POST',
+    signal: AbortSignal.timeout(120000),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sceneText: stripMarkup(args.sceneText),
+      recent: args.recent.map(t => stripMarkup(t).slice(0, 1200)),
+      protagonist: args.protagonist ? stripMarkup(args.protagonist) : '',
+      count: args.count
+    })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !Array.isArray(body.beats) || !body.beats.length) {
+    throw Object.assign(new Error(body.error || `Beat writer failed (${res.status})`), { quota: body.quota, retryAfterSec: body.retryAfterSec });
+  }
+  return body.beats as string[];
+};
+
 // `look` is the protagonist's visual description (see describeCharacterLook)
 export const buildScenePrompt = (sceneText: string, look?: string, styleTags = DEFAULT_STYLE_TAGS) => {
   const clean = stripMarkup(sceneText);
