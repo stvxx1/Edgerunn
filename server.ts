@@ -7,6 +7,7 @@ import { CRITICAL_INJURIES, MASTER_GM_SYSTEM_PROMPT, QUICKHACKS_LIBRARY } from '
 import { CheckResult, DamageResult, HUDState } from './src/types';
 import { generateOfflineGMResponse } from './src/utils/localGMGenerator';
 import { injectCyberPersona } from './src/utils/CyberPersonaInjector';
+import { CooldownBook, QuotaInfo, QuotaKind, detectLocalLLM, localChat, parseQuota, worstQuota } from './src/utils/helperLLM';
 import { submitHordeJob, checkHordeJob, cancelHordeJob, listHordeModels } from './src/utils/aiHorde';
 import { COMFY_JOB_PREFIX, submitComfyJob, checkComfyJob, cancelComfyJob, listComfyCheckpoints, isComfyAvailable } from './src/utils/comfyui';
 
@@ -24,7 +25,27 @@ const getGeminiKey = (isBackup: boolean = false): string => {
   return process.env.GEMINI_API_KEY || '';
 };
 
+// Vertex AI is the Google Cloud route, so it bills against Cloud credit instead of AI Studio's balance.
+// Either GEMINI_VERTEX_API_KEY (express mode) or GEMINI_VERTEX_PROJECT (uses `gcloud auth application-default login`).
+const vertexConfigured = () => !!(process.env.GEMINI_VERTEX_API_KEY?.trim() || process.env.GEMINI_VERTEX_PROJECT?.trim());
+
 const getGeminiClient = (isBackup: boolean = false) => {
+  const httpOptions = {
+    headers: { 'User-Agent': 'aistudio-build' },
+    // GEMINI_BASE_URL is for proxies and for testing against a stand-in server
+    ...(process.env.GEMINI_BASE_URL ? { baseUrl: process.env.GEMINI_BASE_URL } : {})
+  };
+  // When Vertex is set up it takes the primary slot; the AI Studio key (if any) becomes the backup
+  if (vertexConfigured()) {
+    if (!isBackup) {
+      const apiKey = process.env.GEMINI_VERTEX_API_KEY?.trim();
+      return apiKey
+        ? new GoogleGenAI({ vertexai: true, apiKey, httpOptions })
+        : new GoogleGenAI({ vertexai: true, project: process.env.GEMINI_VERTEX_PROJECT!.trim(), location: process.env.GEMINI_VERTEX_LOCATION?.trim() || 'global', httpOptions });
+    }
+    const studioKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_BACKUP || process.env.GEMINI_API_KEY_Backup || '';
+    return studioKey ? new GoogleGenAI({ apiKey: studioKey, httpOptions }) : null;
+  }
   const key = getGeminiKey(isBackup);
   if (!key) {
     if (!isBackup) {
@@ -32,10 +53,7 @@ const getGeminiClient = (isBackup: boolean = false) => {
     }
     return null;
   }
-  return new GoogleGenAI({
-    apiKey: key,
-    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-  });
+  return new GoogleGenAI({ apiKey: key, httpOptions });
 };
 
 // --- API ENDPOINTS ---
@@ -276,26 +294,71 @@ const HELPER_MODELS = envList('GEMINI_HELPER_MODELS', [
   'gemini-3.1-flash-lite-preview'
 ]);
 
-// Run a short text job through every key x model until one gives an answer `accept` likes.
-// 404/429/403 (gone, out of quota, blocked) are skipped for the rest of the request; 5xx
-// (overloaded) gets a second pass after a short pause. Returns null if nothing worked in time.
+// What the last helper job learned about Gemini's quota, so the UI can say why it fell back
+interface HelperReport { quota?: QuotaKind; retryAfterSec?: number; usedLocal?: boolean }
+
+const quotaBook = new CooldownBook();       // models that just said "quota exceeded"
+const goneModels = new Set<string>();        // 404 / 403: not coming back this run
+const rejectsThinking = new Set<string>();   // models that refuse the MINIMAL thinking level
+
+// Run a short text job: Gemini first (every key x model), then a local model if one is running.
+// 404/403 (gone) and 429 (quota) are remembered, so a model that is out of quota is skipped
+// instantly on the next request instead of being asked again; 5xx (overloaded) gets a second
+// pass after a pause. `preferLocal` flips the order to save Gemini's quota for the GM.
+// Returns null if nothing worked.
 const generateText = async (opts: {
   contents: string;
   config: Record<string, any>;
   accept: (text: string) => string | null;
-  budgetMs?: number;
-  minimalThinking?: boolean; // a short answer needs no reasoning, and thinking tokens count against the output cap
+  budgetMs?: number;          // time allowed for the Gemini part
+  localTimeoutMs?: number;    // time allowed for the local model
+  minimalThinking?: boolean;  // a short answer needs no reasoning, and thinking tokens count against the output cap
+  preferLocal?: boolean;
+  report?: HelperReport;
 }): Promise<{ text: string; model: string } | null> => {
-  const deadline = Date.now() + (opts.budgetMs ?? 20000);
-  const clients = geminiClients();
-  const dead = new Set<string>();
-  let thinkingOk = !!opts.minimalThinking;
+  const deadline = Date.now() + (opts.budgetMs ?? 14000);
+  const quotaHits: QuotaInfo[] = [];
 
+  const tryLocal = async () => {
+    const llm = await detectLocalLLM();
+    if (!llm) return null;
+    try {
+      const raw = await localChat(llm, {
+        system: String(opts.config.systemInstruction || ''),
+        user: opts.contents,
+        maxTokens: Math.min(Number(opts.config.maxOutputTokens) || 512, 700),
+        temperature: opts.config.temperature ?? 0.4,
+        timeoutMs: opts.localTimeoutMs ?? 22000
+      });
+      const text = opts.accept(raw);
+      if (text) {
+        if (opts.report) opts.report.usedLocal = true;
+        return { text, model: `local:${llm.model}` };
+      }
+    } catch (err: any) {
+      console.warn(`Local model helper failed (${llm.model}):`, String(err?.message || err).slice(0, 90));
+    }
+    return null;
+  };
+
+  if (opts.preferLocal) {
+    const local = await tryLocal();
+    if (local) return local;
+  }
+
+  const clients = geminiClients();
   for (let pass = 0; pass < 2; pass++) {
     for (let ci = 0; ci < clients.length; ci++) {
       for (const model of HELPER_MODELS) {
         const id = `${ci}:${model}`;
-        for (let attempt = 0; attempt < 2 && !dead.has(id) && Date.now() < deadline; attempt++) {
+        if (goneModels.has(id) || Date.now() >= deadline) continue;
+        const cooling = quotaBook.active(id);
+        if (cooling) {
+          if (pass === 0) quotaHits.push(cooling); // counted once
+          continue;
+        }
+        for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt++) {
+          const useThinking = !!opts.minimalThinking && !rejectsThinking.has(model);
           try {
             const result = await clients[ci].models.generateContent({
               model,
@@ -303,7 +366,7 @@ const generateText = async (opts: {
               config: {
                 ...opts.config,
                 httpOptions: { timeout: 10000 },
-                ...(thinkingOk ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } } : {})
+                ...(useThinking ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } } : {})
               }
             });
             if (result.candidates?.[0]?.finishReason === 'MAX_TOKENS') break; // cut off: try the next model
@@ -313,14 +376,39 @@ const generateText = async (opts: {
           } catch (err: any) {
             const code = err?.status || err?.code;
             console.warn(`Helper job failed on ${model}${ci ? ' (backup key)' : ''}:`, code || '', String(err?.message || '').slice(0, 90));
-            if (code === 400 && thinkingOk) { thinkingOk = false; continue; } // model rejects the thinking setting
-            if (code === 404 || code === 429 || code === 403) dead.add(id);
+            if (code === 400 && useThinking && /thinking/i.test(String(err?.message))) {
+              rejectsThinking.add(model); // only this model; retry it without the setting
+              continue;
+            }
+            if (code === 402) {
+              // a paid key whose prepaid balance is $0: skip it for a while, and say so
+              const info: QuotaInfo = { kind: 'credits' };
+              quotaBook.mark(id, info);
+              quotaHits.push(info);
+            } else if (code === 429) {
+              const info = parseQuota(err);
+              quotaBook.mark(id, info);
+              quotaHits.push(info);
+            } else if (code === 404 || code === 403) {
+              goneModels.add(id);
+            }
             break;
           }
         }
       }
     }
     if (pass === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 900));
+  }
+
+  if (!opts.preferLocal) {
+    const local = await tryLocal();
+    if (local) return local;
+  }
+
+  const worst = worstQuota(quotaHits);
+  if (opts.report && worst) {
+    opts.report.quota = worst.kind;
+    opts.report.retryAfterSec = worst.retryAfterSec;
   }
   return null;
 };
@@ -366,24 +454,31 @@ ${(Array.isArray(recent) ? recent : []).map((t: any) => String(t).slice(0, 1200)
 SCENE TO ILLUSTRATE:
 ${sceneText.slice(0, 5000)}`;
 
+  const report: HelperReport = {};
   const written = await generateText({
     contents,
     config: { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
     minimalThinking: true,
-    budgetMs: 20000, // the client gives up after ~24s, so don't keep working past that
+    budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~42s)
+    preferLocal: process.env.HELPER_PREFER === 'local',
+    report,
     accept: text => {
-      const line = text
-        .replace(/```[a-z]*/gi, '')
+      // Small local models like to add "Here is the prompt:" or explain themselves: keep only the
+      // prompt line, and cut it to a length the image model can use
+      const lines = text.replace(/```[a-z]*/gi, '').split('\n').map(l => l.replace(/\*+/g, '').trim()).filter(Boolean)
+        .filter(l => !/^(here('|\s?i)s|sure|okay|certainly|note|this prompt|explanation|#)/i.test(l));
+      let line = (lines.find(l => l.includes(',')) || lines[0] || '')
+        .replace(/^[-*]\s*/, '')
         .replace(/^(prompt|positive prompt)\s*:\s*/i, '')
         .replace(/["“”]/g, '')
-        .split('\n').map(l => l.trim()).filter(Boolean).join(', ')
-        .replace(/,\s*,/g, ',')
         .trim();
-      return line.length > 20 ? line.slice(0, 800) : null;
+      const words = line.split(/\s+/);
+      if (words.length > 80) line = words.slice(0, 80).join(' ').replace(/[,;:\s]+\S*$/, '');
+      return line.length > 20 ? line : null;
     }
   });
   if (written) return res.json({ prompt: written.text, model: written.model });
-  res.status(502).json({ error: 'Prompt writer unavailable.' });
+  res.status(502).json({ error: 'Prompt writer unavailable.', quota: report.quota, retryAfterSec: report.retryAfterSec });
 });
 
 // Story-so-far summariser: folds older turns into a compact chronicle so /api/chat only needs
@@ -419,6 +514,7 @@ ${transcript}`;
     config: { temperature: 0.3, maxOutputTokens: 2048 },
     minimalThinking: true,
     budgetMs: 30000,
+    localTimeoutMs: 60000,
     accept: text => text.trim() || null
   });
   if (summary) return res.json({ summary: summary.text, model: summary.model });

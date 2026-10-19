@@ -131,7 +131,7 @@ export const requestScenePrompt = async (args: {
   if (cached) return cached;
   const res = await fetch('/api/scene-prompt', {
     method: 'POST',
-    signal: AbortSignal.timeout(24000), // Gemini can stall under load: fall back to the basic summary
+    signal: AbortSignal.timeout(42000), // Gemini can stall under load: fall back to the quick summary
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sceneText: stripMarkup(args.sceneText),
@@ -141,7 +141,29 @@ export const requestScenePrompt = async (args: {
     })
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body.prompt) throw new Error(body.error || `Prompt writer failed (${res.status})`);
+  if (!res.ok || !body.prompt) {
+    // Carry the server's reason (daily/minute quota) so the UI can explain the fallback
+    throw Object.assign(new Error(body.error || `Prompt writer failed (${res.status})`), { quota: body.quota, retryAfterSec: body.retryAfterSec });
+  }
   writtenPrompts.set(cacheKey, body.prompt);
   return body.prompt as string;
+};
+
+// Gemini's free quota resets at midnight Pacific time; say when that is on the player's own clock
+export const geminiResetTimeLocal = (now = new Date()): string => {
+  const la = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23' })
+    .formatToParts(now);
+  const get = (type: string) => Number(la.find(p => p.type === type)?.value ?? 0);
+  const msIntoDay = ((get('hour') * 60 + get('minute')) * 60 + get('second')) * 1000;
+  const reset = new Date(now.getTime() + (24 * 3600 * 1000 - msIntoDay));
+  return reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
+
+// One short line for the prompt box when the AI writer couldn't be used
+export const describePromptFallback = (err: any): string => {
+  if (err?.quota === 'daily') return `Gemini's free daily limit is used up (resets about ${geminiResetTimeLocal()})`;
+  if (err?.quota === 'credits') return 'Gemini prepaid credits are used up (add funds in AI Studio billing)';
+  if (err?.quota === 'minute') return `Gemini is rate-limited${err.retryAfterSec ? `, try again in ${err.retryAfterSec}s` : ''}`;
+  if (err?.quota === 'unknown') return 'Gemini quota used up for now';
+  return 'AI prompt writer unavailable';
 };
