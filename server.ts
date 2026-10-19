@@ -417,6 +417,39 @@ const generateText = async (opts: {
 // doing what where, instead of pasting the narration (which SD models can't use).
 const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|hentai|waifu|toon|manga|2d|cartoon/i;
 
+// Story themes that no camera can see. Small models copy them out of the narration into the prompt,
+// where they only crowd out the tags that matter.
+const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency/i;
+
+// Tidy a comma-separated prompt: drop non-visual tags and repeats, cap the length
+const cleanPromptTags = (line: string, maxWords = 80) => {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of line.split(',')) {
+    const tag = raw.trim();
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key) || NON_VISUAL_TAG.test(tag)) continue;
+    seen.add(key);
+    kept.push(tag);
+  }
+  let out = kept.join(', ');
+  const words = out.split(/\s+/);
+  if (words.length > maxWords) out = words.slice(0, maxWords).join(' ').replace(/[,;:\s]+\S*$/, '');
+  return out;
+};
+
+// Slot mode (for small local models): the model only fills in four short fields and the code builds
+// the prompt around them, so it can't ramble or forget the quality tags.
+const SLOT_LABELS = ['SUBJECTS', 'ACTION', 'SETTING', 'CAMERA'] as const;
+const parseSlots = (text: string): Record<string, string> | null => {
+  const out: Record<string, string> = {};
+  for (const raw of text.replace(/```[a-z]*/gi, '').split('\n')) {
+    const m = raw.replace(/\*+/g, '').match(/^\s*[-•]?\s*(SUBJECTS?|ACTION|SETTING|CAMERA)\s*[:\-]\s*(.+)$/i);
+    if (m) out[m[1].toUpperCase().replace(/^SUBJECT$/, 'SUBJECTS')] = m[2].replace(/["“”]/g, '').replace(/[.;]+$/, '').trim();
+  }
+  return out.SUBJECTS && out.ACTION ? out : null;
+};
+
 app.post('/api/scene-prompt', async (req, res) => {
   const { sceneText, recent = [], protagonist = '', modelName = '' } = req.body || {};
   if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
@@ -424,6 +457,43 @@ app.post('/api/scene-prompt', async (req, res) => {
   const style = ANIME_MODEL.test(String(modelName))
     ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
     : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
+
+  const isAnime = ANIME_MODEL.test(String(modelName));
+  const closingTags = isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
+  const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
+
+  const slotInstruction = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it for an image generator.
+
+Answer with exactly these four lines and nothing else:
+SUBJECTS: who is in the shot (at most 2 people), each with gender, an adult age like "30 year old", build, hair, clothing or nakedness, cyberware
+ACTION: what they are physically doing right now, in plain words: pose, positions, who touches whom
+SETTING: the place and its main objects
+CAMERA: framing and lighting
+
+Rules:
+- Pick the single most visual moment. Ignore the rest of the scene.
+- Only things a camera can see: no feelings, themes, sounds, smells, backstory or abstract words.
+- Describe people by appearance, never by name. "You" is the protagonist: use the character sheet line.
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it.
+- EVERY person is an adult. Always give an explicit adult age of 21 or more, even if the scene gives none. Never use words like girl, teen, young, little or petite for a person.
+
+Example 1
+SCENE: Rain hammers the alley. You duck behind a dumpster as a ganger with chrome blades lunges, and you fire your pistol into his chest.
+SUBJECTS: 30 year old muscular man with a shaved head and a black leather jacket, 28 year old ganger with chrome blades in his forearms
+ACTION: the first man fires a pistol point blank into the lunging ganger, who is mid-leap with blades out
+SETTING: narrow wet alley, rusted dumpster, neon signs, steam
+CAMERA: low angle medium shot, harsh neon rim lighting
+
+Example 2
+SCENE: In the penthouse you pull her onto the bed and kiss her neck while she tugs at your shirt.
+SUBJECTS: 35 year old broad-shouldered man with short dark hair, 29 year old woman with long red hair in a silk slip
+ACTION: the man kneels over the woman on the bed, kissing her neck while she pulls his shirt open
+SETTING: luxury penthouse bedroom, rumpled sheets, city lights through a large window
+CAMERA: close medium shot, warm dim lamp lighting`;
+
+  const slotContents = `CHARACTER SHEET for "you": ${String(protagonist).slice(0, 400) || 'a street mercenary'}
+
+SCENE: ${sceneText.slice(-2500)}`;
 
   const systemInstruction = `You turn one scene from a Cyberpunk RED text roleplay into ONE image-generation prompt for Stable Diffusion 1.5.
 
@@ -456,14 +526,21 @@ ${sceneText.slice(0, 5000)}`;
 
   const report: HelperReport = {};
   const written = await generateText({
-    contents,
-    config: { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
+    contents: slotMode ? slotContents : contents,
+    config: slotMode ? { systemInstruction: slotInstruction, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
     minimalThinking: true,
     budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~2 min)
     localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 90000, // a phone or CPU-only model can take a while
     preferLocal: process.env.HELPER_PREFER === 'local',
     report,
     accept: text => {
+      // Slot answer (labelled fields): build the prompt around them
+      const slots = parseSlots(text);
+      if (slots) {
+        const built = cleanPromptTags([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA, closingTags].filter(Boolean).join(', '));
+        return built.length > 20 ? built : null;
+      }
+      if (slotMode) return null; // asked for fields and got something else: try the next model
       // Small local models like to add "Here is the prompt:" or explain themselves: keep only the
       // prompt line, and cut it to a length the image model can use
       const lines = text.replace(/```[a-z]*/gi, '').split('\n').map(l => l.replace(/\*+/g, '').trim()).filter(Boolean)
@@ -473,8 +550,7 @@ ${sceneText.slice(0, 5000)}`;
         .replace(/^(prompt|positive prompt)\s*:\s*/i, '')
         .replace(/["“”]/g, '')
         .trim();
-      const words = line.split(/\s+/);
-      if (words.length > 80) line = words.slice(0, 80).join(' ').replace(/[,;:\s]+\S*$/, '');
+      line = cleanPromptTags(line);
       return line.length > 20 ? line : null;
     }
   });
