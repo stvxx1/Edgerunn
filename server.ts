@@ -459,7 +459,8 @@ ${sceneText.slice(0, 5000)}`;
     contents,
     config: { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
     minimalThinking: true,
-    budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~42s)
+    budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~2 min)
+    localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 90000, // a phone or CPU-only model can take a while
     preferLocal: process.env.HELPER_PREFER === 'local',
     report,
     accept: text => {

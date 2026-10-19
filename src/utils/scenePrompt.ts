@@ -131,7 +131,7 @@ export const requestScenePrompt = async (args: {
   if (cached) return cached;
   const res = await fetch('/api/scene-prompt', {
     method: 'POST',
-    signal: AbortSignal.timeout(42000), // Gemini can stall under load: fall back to the quick summary
+    signal: AbortSignal.timeout(120000), // slow local models need the time; Gemini alone gives up on the server after ~14s
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       sceneText: stripMarkup(args.sceneText),
