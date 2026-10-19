@@ -25,7 +25,27 @@ const getGeminiKey = (isBackup: boolean = false): string => {
   return process.env.GEMINI_API_KEY || '';
 };
 
+// Vertex AI is the Google Cloud route, so it bills against Cloud credit instead of AI Studio's balance.
+// Either GEMINI_VERTEX_API_KEY (express mode) or GEMINI_VERTEX_PROJECT (uses `gcloud auth application-default login`).
+const vertexConfigured = () => !!(process.env.GEMINI_VERTEX_API_KEY?.trim() || process.env.GEMINI_VERTEX_PROJECT?.trim());
+
 const getGeminiClient = (isBackup: boolean = false) => {
+  const httpOptions = {
+    headers: { 'User-Agent': 'aistudio-build' },
+    // GEMINI_BASE_URL is for proxies and for testing against a stand-in server
+    ...(process.env.GEMINI_BASE_URL ? { baseUrl: process.env.GEMINI_BASE_URL } : {})
+  };
+  // When Vertex is set up it takes the primary slot; the AI Studio key (if any) becomes the backup
+  if (vertexConfigured()) {
+    if (!isBackup) {
+      const apiKey = process.env.GEMINI_VERTEX_API_KEY?.trim();
+      return apiKey
+        ? new GoogleGenAI({ vertexai: true, apiKey, httpOptions })
+        : new GoogleGenAI({ vertexai: true, project: process.env.GEMINI_VERTEX_PROJECT!.trim(), location: process.env.GEMINI_VERTEX_LOCATION?.trim() || 'global', httpOptions });
+    }
+    const studioKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_BACKUP || process.env.GEMINI_API_KEY_Backup || '';
+    return studioKey ? new GoogleGenAI({ apiKey: studioKey, httpOptions }) : null;
+  }
   const key = getGeminiKey(isBackup);
   if (!key) {
     if (!isBackup) {
@@ -33,11 +53,7 @@ const getGeminiClient = (isBackup: boolean = false) => {
     }
     return null;
   }
-  return new GoogleGenAI({
-    apiKey: key,
-    // GEMINI_BASE_URL is for proxies and for testing against a stand-in server
-    httpOptions: { headers: { 'User-Agent': 'aistudio-build' }, ...(process.env.GEMINI_BASE_URL ? { baseUrl: process.env.GEMINI_BASE_URL } : {}) }
-  });
+  return new GoogleGenAI({ apiKey: key, httpOptions });
 };
 
 // --- API ENDPOINTS ---
