@@ -1,6 +1,15 @@
 
 // Deliberately setting-neutral: rain, neon and so on come from the scene itself, so an indoor scene doesn't get wet streets
 export const DEFAULT_STYLE_TAGS = 'cyberpunk, cinematic lighting, highly detailed, sharp focus';
+// Pony Diffusion models are trained on quality "score" tags: without them the output is poor
+export const PONY_SCORE_TAGS = 'score_9, score_8_up, score_7_up';
+export const PONY_NEGATIVE_TAGS = 'score_6, score_5, score_4';
+export const isPonyModel = (name?: string) => /pony/i.test(name || '');
+export const withPonyScore = (prompt: string, model?: string) =>
+  isPonyModel(model) && !/score_9/i.test(prompt) ? `${PONY_SCORE_TAGS}, ${prompt}` : prompt;
+export const withPonyNegative = (negative: string, model?: string) =>
+  isPonyModel(model) && !/score_6/i.test(negative) ? `${PONY_NEGATIVE_TAGS}, ${negative}` : negative;
+
 export const DEFAULT_NEGATIVE_PROMPT = 'blurry, lowres, bad anatomy, bad hands, extra fingers, deformed, watermark, signature, text, jpeg artifacts';
 
 // SD's CLIP encoder only weighs roughly the first 75 tokens heavily, so keep the scene excerpt tight.
@@ -33,6 +42,8 @@ const clipToSentences = (text: string, max: number) => {
 
 const VISUAL_VERB = /\b(slid\w*|slides?|stumbl\w+|aims?|aimed|aiming|fires?|fired|firing|grabs?|grabbed|grip\w*|kneel\w*|lean\w*|leans|steps?|stepped|draws?|drew|drawn|swings?|swung|crouch\w*|holds?|held|holding|points?|pointed|leaps?|leapt|dives?|dove|ducks?|ducked|kicks?|kicked|punch\w*|slams?|slammed|shoves?|shoved|pulls?|pulled|pushes?|pushed|lifts?|lifted|raises?|raised|lowers?|lowered|turns?|turned|stares?|stared|glares?|glared|smiles?|smiled|grins?|grinned|sits?|sat|stands?|stood|walks?|walked|runs?|ran|climbs?|climbed|falls?|fell|bleeds?|bled|collapses?|collapsed|embraces?|embraced|kisses?|kissed|strips?|stripped|undress\w*|drinks?|drank|smokes?|smoked|hacks?|hacked|plugs?|plugged|split\w*|jacks?|jacked|unholsters?|levels?|leveled|sprint\w*|lunges?|lunged|dodges?|dodged|rolls?|rolled|vaults?|vaulted|spreads?|spread|knocks?|knocked|shatters?|shattered|erupts?|erupted|extends?|extended|retracts?|unfolds?|unfolded|glows?|glowed|flickers?|flickered|looms?|loomed|tower\w*|crawl\w*|spill\w*|drip\w*|burst\w*|tears?|tore|slash\w*|stab\w*|thrust\w*)\b/gi;
 const BODY_OR_GEAR = /\b(hands?|fingers?|arms?|forearms?|eyes?|optics|face|jaw|blades?|gun|pistol|rifle|smg|shotgun|katana|knife|sword|chrome|cyber\w*|suit|jacket|coat|armou?r|desk|table|window|glass|door|bar|chair|couch|bed|car|bike|screen|hologram|neon|sign|rain|blood|smoke|steam)\b/gi;
+// Sentences about time, feelings or themes: no camera can see these, so they never make a shot
+const ABSTRACT = /\b(hours?|minutes?|days?|moments?|blur|psycholog\w*|break|fracture|ritual|dominance|surrender\w*|degradation|trauma|dependency|delirium|sanctuary|theater|theatre|weight of|presence|resistance|gratitude)\b/i;
 const SENSORY_ONLY = /\b(smell\w*|scent|stench|tastes?|sound\w*|hiss\w*|hum\w*|echo\w*|silence|whisper\w*|thought|wonder\w*|remember\w*|feel\w*|felt|know|knew|realiz\w+)\b/gi;
 
 const SETTING_TAGS: Array<[RegExp, string]> = [
@@ -111,7 +122,8 @@ export const offlineBeats = (sceneText: string, count: number): string[] => {
   const clean = stripMarkup(sceneText).replace(/["“][^"”]*["”]/g, ' ');
   const sentences = (clean.match(/[^.!?]+[.!?]*/g) || []).map(x => x.trim()).filter(x => x.length > 12 && !x.endsWith('?'));
   if (!sentences.length) return [];
-  const score = (x: string) => (x.match(VISUAL_VERB) || []).length * 2 + (x.match(BODY_OR_GEAR) || []).length - (x.match(SENSORY_ONLY) || []).length;
+  const score = (x: string) =>
+    (x.match(VISUAL_VERB) || []).length * 2 + (x.match(BODY_OR_GEAR) || []).length - (x.match(SENSORY_ONLY) || []).length - (ABSTRACT.test(x) ? 6 : 0);
   const beats: string[] = [];
   for (let i = 0; i < count; i++) {
     const from = Math.floor((i * sentences.length) / count);

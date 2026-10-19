@@ -421,6 +421,14 @@ const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|henta
 // where they only crowd out the tags that matter.
 const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency/i;
 
+// Narration leaks "you"/"your" into prompts; an image model can't use them. Turn them into who they are.
+const depersonalise = (text: string, protagonist: string) => {
+  const female = /\b(woman|female|she|her|girl)\b/i.test(protagonist);
+  return text
+    .replace(/\byour\b/gi, female ? 'her' : 'his')
+    .replace(/\byou(?:'re|'ve|'ll|'d)?\b/gi, female ? 'the woman' : 'the man');
+};
+
 // Tidy a comma-separated prompt: drop non-visual tags and repeats, cap the length
 const cleanPromptTags = (line: string, maxWords = 80) => {
   const seen = new Set<string>();
@@ -450,22 +458,45 @@ Rules:
 - Pick the single most visual moment. Ignore the rest of the scene.
 - Only things a camera can see: no feelings, themes, sounds, smells, backstory or abstract words.
 - Describe people by appearance, never by name. "You" is the protagonist: use the character sheet line.
-- Show the scene faithfully, including violence or intimacy, without softening or adding to it.
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it. For a sex act, name it and the position in plain tag-style words (for example: couple having sex, missionary, cowgirl, from behind, oral) instead of narrating it, and say who is where.
+- Never write "you" or "your": say "the man" or "the woman" (the character sheet says which the protagonist is).
 - EVERY person is an adult. Always give an explicit adult age of 21 or more, even if the scene gives none. Never use words like girl, teen, young, little or petite for a person.
 
-Example 1
-SCENE: Rain hammers the alley. You duck behind a dumpster as a ganger with chrome blades lunges, and you fire your pistol into his chest.
-SUBJECTS: 30 year old muscular man with a shaved head and a black leather jacket, 28 year old ganger with chrome blades in his forearms
-ACTION: the first man fires a pistol point blank into the lunging ganger, who is mid-leap with blades out
-SETTING: narrow wet alley, rusted dumpster, neon signs, steam
-CAMERA: low angle medium shot, harsh neon rim lighting
+Example A (only shows the format; never reuse its people, places or words)
+SCENE: At the noodle stall the cook slams a cleaver through a duck while a customer in a rain jacket waves a credit chip at him.
+SUBJECTS: 45 year old stocky cook with a shaved head and a stained apron, 32 year old customer in a yellow rain jacket
+ACTION: the cook brings a cleaver down through a roast duck on a chopping block while the customer holds out a glowing credit chip
+SETTING: cramped night market noodle stall, steam, paper lanterns, wet street
+CAMERA: medium shot from the customer's side, warm lantern light
 
-Example 2
-SCENE: In the penthouse you pull her onto the bed and kiss her neck while she tugs at your shirt.
-SUBJECTS: 35 year old broad-shouldered man with short dark hair, 29 year old woman with long red hair in a silk slip
-ACTION: the man kneels over the woman on the bed, kissing her neck while she pulls his shirt open
-SETTING: luxury penthouse bedroom, rumpled sheets, city lights through a large window
-CAMERA: close medium shot, warm dim lamp lighting`;
+Example B (only shows the format; never reuse its people, places or words)
+SCENE: In the garage you wrestle a bike engine onto the bench while she holds the lamp.
+SUBJECTS: 38 year old woman with a ponytail in grease-stained overalls, 41 year old man with a beard in a grey tank top
+ACTION: the man lifts a motorbike engine onto a workbench while the woman holds a work lamp over it
+SETTING: cluttered garage, tools on a pegboard, oil stains, a bike on a stand
+CAMERA: wide shot, harsh overhead light`;
+
+// Same four fields, but written as Danbooru-style tags: Pony models read tags far better than sentences
+const PONY_SLOT_INSTRUCTION = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it as image tags for a Pony Diffusion model.
+
+Answer with exactly these four lines and nothing else. Every line is comma-separated Danbooru-style tags, not sentences:
+SUBJECTS: people count tags (1boy, 1girl, 2girls, 2boys, hetero), then for each person an adult age like "30 year old man", hair, build, clothing or nude, cyberware
+ACTION: the pose and action as tags (standing, kneeling, sitting, holding gun, fighting, sex, from behind, missionary, cowgirl position, oral, bent over) and who touches what
+SETTING: place and objects as tags (indoors, bedroom, bed, alley, neon lights, rain, window)
+CAMERA: framing as tags (from side, from above, close-up, cowboy shot, looking at viewer, dim lighting)
+
+Rules:
+- At most 2 people. Pick the single most visual moment; ignore the rest of the scene.
+- Tags for things a camera can see only: no feelings, themes, sounds, backstory or full sentences. Never write "you" or "your".
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it. Name a sex act and its position with plain tags.
+- EVERY person is an adult: always include an adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite to describe a person's age.
+
+Example (only shows the format; never reuse its people, places or words)
+SCENE: At the noodle stall the cook chops a duck while a customer waves a credit chip.
+SUBJECTS: 1boy, 1girl, 45 year old man, stocky, shaved head, apron, 32 year old woman, yellow raincoat
+ACTION: standing, holding cleaver, chopping, holding credit chip, facing each other
+SETTING: outdoors, night market, noodle stall, steam, paper lanterns, wet street
+CAMERA: from side, cowboy shot, warm lantern light`;
 
 // Slot mode (for small local models): the model only fills in four short fields and the code builds
 // the prompt around them, so it can't ramble or forget the quality tags.
@@ -487,8 +518,12 @@ app.post('/api/scene-prompt', async (req, res) => {
     ? 'Style: anime/illustration model. Use danbooru-style tags (1girl, solo, 2boys, ...) and finish with tags like masterpiece, best quality.'
     : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
 
+  const isPony = /pony/i.test(String(modelName));
+  const withScore = (line: string) => (isPony && !/score_9/i.test(line) ? `score_9, score_8_up, score_7_up, ${line}` : line);
   const isAnime = ANIME_MODEL.test(String(modelName));
-  const closingTags = isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
+  const closingTags = isPony
+    ? (/real|photo|cyber/i.test(String(modelName)) ? 'realistic, photo \\(medium\\), detailed skin, sharp focus' : 'source_anime, highly detailed')
+    : isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
   const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
 
 
@@ -528,7 +563,7 @@ ${sceneText.slice(0, 5000)}`;
   const report: HelperReport = {};
   const written = await generateText({
     contents: slotMode ? slotContents : contents,
-    config: slotMode ? { systemInstruction: SLOT_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
+    config: slotMode ? { systemInstruction: isPony ? PONY_SLOT_INSTRUCTION : SLOT_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 } : { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
     minimalThinking: true,
     budgetMs: 14000,        // Gemini part; the local model gets its own time after that (client waits ~2 min)
     localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000, // a phone or CPU-only model can take a while
@@ -538,10 +573,13 @@ ${sceneText.slice(0, 5000)}`;
       // Slot answer (labelled fields): build the prompt around them
       const slots = parseSlots(text);
       if (slots) {
-        const built = cleanPromptTags([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA, closingTags].filter(Boolean).join(', '));
-        return built.length > 20 ? built : null;
+        const built = cleanPromptTags(depersonalise([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA].filter(Boolean).join(', '), String(protagonist)) + ', ' + closingTags);
+        return built.length > 20 ? withScore(built) : null;
       }
-      if (slotMode) return null; // asked for fields and got something else: try the next model
+      if (slotMode) {
+        console.warn(`Prompt writer reply not in the four-field format: ${JSON.stringify(text.slice(0, 220))}`);
+        return null; // asked for fields and got something else: try the next model
+      }
       // Small local models like to add "Here is the prompt:" or explain themselves: keep only the
       // prompt line, and cut it to a length the image model can use
       const lines = text.replace(/```[a-z]*/gi, '').split('\n').map(l => l.replace(/\*+/g, '').trim()).filter(Boolean)
@@ -552,44 +590,47 @@ ${sceneText.slice(0, 5000)}`;
         .replace(/["“”]/g, '')
         .trim();
       line = cleanPromptTags(line);
-      return line.length > 20 ? line : null;
+      return line.length > 20 ? withScore(line) : null;
     }
   });
   if (written) return res.json({ prompt: written.text, model: written.model });
   res.status(502).json({ error: 'Prompt writer unavailable.', quota: report.quota, retryAfterSec: report.retryAfterSec });
 });
 
+const BEATS_INSTRUCTION = `You split one scene of a Cyberpunk RED text roleplay into storyboard shots for an image generator. The user says how many shots.
+
+Answer with exactly that many lines, in story order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else.
+
+Each shot is one still picture: who is in it (at most 2 people, by look and an adult age like "30 year old", never by name; "you" is the protagonist), what they are physically doing, and where. 12 to 22 words. Only things a camera can see: no feelings, themes, sounds, smells, dialogue or backstory.
+
+How to choose the shots:
+- Shot 1 sets the place and the people before the action starts.
+- The middle shots are the main physical actions of the scene, one each, in order. Every shot must show something different: a new pose, a new action, a new person in frame, or a new angle.
+- The last shot is the result or the aftermath.
+- Show the events faithfully, including violence or intimacy, without softening or adding to them.
+- EVERY person is an adult. Give an explicit adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite for a person.
+
+Example, 3 shots, scene: "Rain hammers the alley. You duck behind a dumpster as a ganger with chrome blades lunges, and you fire into his chest. He drops and you walk away."
+SHOT 1: 30 year old man with a shaved head and black leather jacket crouches behind a rusted dumpster in a wet neon alley
+SHOT 2: the man fires a pistol point blank at a 28 year old ganger mid-lunge with chrome blades in his forearms
+SHOT 3: the ganger lies dead on the wet pavement while the man walks away down the neon-lit alley`;
+
 // Storyboard beats: splits one scene into a few consecutive "what a camera sees" moments. The client
 // adds the character's look and the setting to each, so the model only has to describe the action.
 app.post('/api/scene-beats', async (req, res) => {
-  const { sceneText, recent = [], protagonist = '' } = req.body || {};
+  const { sceneText, protagonist = '' } = req.body || {};
   const count = Math.min(6, Math.max(2, Number(req.body?.count) || 4));
   if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
 
-  const systemInstruction = `You split one scene from a Cyberpunk RED text roleplay into ${count} consecutive storyboard shots.
+  const contents = `CHARACTER SHEET for "you": ${String(protagonist).slice(0, 400) || 'a street mercenary'}
 
-Output exactly ${count} lines, one per shot, in story order, and nothing else: no numbering, labels, quotes, markdown or explanation.
-
-Each line is a short visual phrase of 8-16 words: who is doing what, as a camera would see it. Make the shots different from each other (a change of pose, action, or what is in frame), so they read as a sequence.
-
-Rules:
-- Describe people by role or appearance, never by name ("the scarred man", "you" for the protagonist).
-- No dialogue, sounds, smells or feelings; only visible things.
-- Show the events faithfully, including violence or intimacy, without softening or adding to them.
-- Every character is an adult (18+).`;
-
-  const contents = `PROTAGONIST ("you"): ${String(protagonist).slice(0, 500) || 'a street mercenary'}
-
-RECENT STORY (only to learn who is who):
-${(Array.isArray(recent) ? recent : []).slice(-2).map((t: any) => String(t).slice(0, 700)).join('\n---\n') || '(none)'}
-
-SCENE TO SPLIT INTO ${count} SHOTS:
-${sceneText.slice(0, 5000)}`;
+SPLIT THIS SCENE INTO EXACTLY ${count} SHOTS:
+${sceneText.slice(0, 3000)}`;
 
   const report: HelperReport = {};
   const written = await generateText({
     contents,
-    config: { systemInstruction, temperature: 0.6, maxOutputTokens: 2048 },
+    config: { systemInstruction: BEATS_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 },
     minimalThinking: true,
     budgetMs: 14000,
     localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000,
@@ -597,9 +638,14 @@ ${sceneText.slice(0, 5000)}`;
     report,
     accept: text => {
       const lines = text.replace(/```[a-z]*/gi, '').split('\n')
-        .map(l => l.replace(/\*+/g, '').replace(/^\s*(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/^[-•]\s*/, '').replace(/["“”]/g, '').trim())
-        .filter(l => l.split(/\s+/).length >= 3 && !/^(here('|\s?i)s|sure|okay|certainly|note)/i.test(l));
-      return lines.length >= count ? lines.slice(0, count).map(l => l.replace(/[.;:,]+$/, '')).join('\n') : null;
+        .map(l => l.replace(/\*+/g, '').trim())
+        .filter(l => /^(?:shot\s*)?\d+\s*[.):\-]/i.test(l))
+        .map(l => cleanPromptTags(depersonalise(l.replace(/^(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/["“”]/g, ''), String(protagonist)), 40).replace(/[.;:,]+$/, ''))
+        .filter(l => l.split(/\s+/).length >= 4);
+      const distinct = new Set(lines.map(l => l.toLowerCase()));
+      if (lines.length >= count && distinct.size >= count) return lines.slice(0, count).join('\n');
+      console.warn(`Beat writer reply unusable (${lines.length} of ${count} shots): ${JSON.stringify(text.slice(0, 220))}`);
+      return null;
     }
   });
   if (written) return res.json({ beats: written.text.split('\n'), model: written.model });
