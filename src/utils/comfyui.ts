@@ -6,9 +6,33 @@ import type { HordeGenerateRequest, HordeJobStatus } from './aiHorde';
 export const COMFY_JOB_PREFIX = 'comfy_';
 
 const CLIENT_ID = randomUUID();
-const getBase = () => (process.env.COMFYUI_URL || 'http://127.0.0.1:8188').replace(/\/+$/, '');
+// COMFYUI_URL wins when set. Otherwise look for ComfyUI on its two usual local ports: 8188
+// (portable and command-line installs) and 8000 (ComfyUI Desktop).
+const AUTO_PORTS = [8188, 8000];
+let detectedBase: string | null = null;
+
+const getBase = () => (process.env.COMFYUI_URL?.trim() || detectedBase || `http://127.0.0.1:${AUTO_PORTS[0]}`).replace(/\/+$/, '');
+
+const detectBase = async (): Promise<boolean> => {
+  if (process.env.COMFYUI_URL?.trim()) return true;
+  for (const port of AUTO_PORTS) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/system_stats`, { signal: AbortSignal.timeout(1200) });
+      if (res.ok) {
+        detectedBase = `http://127.0.0.1:${port}`;
+        return true;
+      }
+    } catch {
+      // not listening on this port
+    }
+  }
+  detectedBase = null;
+  return false;
+};
 
 const comfyFetch = async (pathname: string, init: RequestInit = {}, timeoutMs = 15000) => {
+  // With no COMFYUI_URL, find the running instance first (cheap once cached; re-probed after a failure)
+  if (!process.env.COMFYUI_URL?.trim() && !detectedBase) await detectBase();
   let res: Response;
   try {
     res = await fetch(`${getBase()}${pathname}`, {
@@ -17,7 +41,9 @@ const comfyFetch = async (pathname: string, init: RequestInit = {}, timeoutMs = 
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch {
-    const err: any = new Error(`ComfyUI is not reachable at ${getBase()}. Is it running?`);
+    detectedBase = null; // it may have moved or been restarted; probe again next time
+    const where = process.env.COMFYUI_URL?.trim() ? process.env.COMFYUI_URL.trim() : `port ${AUTO_PORTS.join(' or ')} on this machine`;
+    const err: any = new Error(`ComfyUI wasn't found at ${where}. Is it running?`);
     err.status = 503;
     throw err;
   }

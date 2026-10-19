@@ -25,7 +25,7 @@ ComfyUI stays private on the PC. Only the Edgerunn server talks to it.
    npm install
    copy .env.example .env
    ```
-2. In `.env` set `GEMINI_API_KEY`. `COMFYUI_URL` already defaults to `http://127.0.0.1:8188`.
+2. In `.env` set `GEMINI_API_KEY`. Leave `COMFYUI_URL` empty: Edgerunn finds ComfyUI on port 8188 (portable) or 8000 (ComfyUI Desktop) by itself.
 3. `npm run dev` — Edgerunn now listens on port 3000 on every network interface.
 4. When Windows Firewall asks, allow Node.js on **Private networks**.
 
