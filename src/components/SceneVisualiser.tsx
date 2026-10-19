@@ -121,7 +121,8 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         sceneText,
         recent: context,
         protagonist: hudState.customDescription,
-        modelName: settings.models[settings.backend]
+        modelName: settings.models[settings.backend],
+        fresh: force
       });
       if (!userEdited.current) setPrompt(written);
       setPromptSource('ai');
@@ -221,7 +222,7 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           <span>
             PROMPT
             <span className={`ml-2 text-[10px] ${promptSource === 'ai' ? 'text-fuchsia-400' : promptSource === 'basic' ? 'text-yellow-500/80' : 'text-neutral-500'}`}>
-              {promptSource === 'writing' ? 'writing from the scene…' : promptSource === 'ai' ? '✨ written from the scene' : 'basic summary (prompt writer unavailable)'}
+              {promptSource === 'writing' ? 'writing from the scene…' : promptSource === 'ai' ? '✨ written from the scene' : 'quick summary (AI prompt writer unavailable; edit freely)'}
             </span>
           </span>
           <button onClick={() => writePrompt(true)} disabled={promptSource === 'writing'} className="flex items-center gap-1 hover:text-fuchsia-300 disabled:opacity-50">

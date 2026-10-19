@@ -260,6 +260,66 @@ app.post('/api/quickhack', (req, res) => {
 const geminiClients = (): GoogleGenAI[] =>
   [false, true].map(isBackup => { try { return getGeminiClient(isBackup); } catch { return null; } }).filter(Boolean) as GoogleGenAI[];
 
+// Text models for the small helper jobs (prompt writer, summariser), best first. Each has its own
+// free-tier quota and capacity pool, so one being rate-limited or overloaded just moves us to the
+// next. The "-latest" aliases track whatever Google currently calls its lite/flash model.
+const HELPER_MODELS = [
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-3-flash-preview',
+  'gemini-flash-latest',
+  'gemini-3.1-flash-lite-preview'
+];
+
+// Run a short text job through every key x model until one gives an answer `accept` likes.
+// 404/429/403 (gone, out of quota, blocked) are skipped for the rest of the request; 5xx
+// (overloaded) gets a second pass after a short pause. Returns null if nothing worked in time.
+const generateText = async (opts: {
+  contents: string;
+  config: Record<string, any>;
+  accept: (text: string) => string | null;
+  budgetMs?: number;
+  minimalThinking?: boolean; // a short answer needs no reasoning, and thinking tokens count against the output cap
+}): Promise<{ text: string; model: string } | null> => {
+  const deadline = Date.now() + (opts.budgetMs ?? 20000);
+  const clients = geminiClients();
+  const dead = new Set<string>();
+  let thinkingOk = !!opts.minimalThinking;
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (let ci = 0; ci < clients.length; ci++) {
+      for (const model of HELPER_MODELS) {
+        const id = `${ci}:${model}`;
+        for (let attempt = 0; attempt < 2 && !dead.has(id) && Date.now() < deadline; attempt++) {
+          try {
+            const result = await clients[ci].models.generateContent({
+              model,
+              contents: opts.contents,
+              config: {
+                ...opts.config,
+                httpOptions: { timeout: 10000 },
+                ...(thinkingOk ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } } : {})
+              }
+            });
+            if (result.candidates?.[0]?.finishReason === 'MAX_TOKENS') break; // cut off: try the next model
+            const text = opts.accept(result.text || '');
+            if (text) return { text, model };
+            break; // answered but unusable (e.g. blocked): try the next model
+          } catch (err: any) {
+            const code = err?.status || err?.code;
+            console.warn(`Helper job failed on ${model}${ci ? ' (backup key)' : ''}:`, code || '', String(err?.message || '').slice(0, 90));
+            if (code === 400 && thinkingOk) { thinkingOk = false; continue; } // model rejects the thinking setting
+            if (code === 404 || code === 429 || code === 403) dead.add(id);
+            break;
+          }
+        }
+      }
+    }
+    if (pass === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 900));
+  }
+  return null;
+};
+
 // Image prompt writer: turns the scene on screen into a Stable Diffusion prompt that says who is
 // doing what where, instead of pasting the narration (which SD models can't use).
 const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|hentai|waifu|toon|manga|2d|cartoon/i;
@@ -301,45 +361,23 @@ ${(Array.isArray(recent) ? recent : []).map((t: any) => String(t).slice(0, 1200)
 SCENE TO ILLUSTRATE:
 ${sceneText.slice(0, 5000)}`;
 
-  let thinkingSupported = true; // flipped off if a model rejects the thinking setting
-  const deadline = Date.now() + 20000; // the client gives up after ~24s, so don't keep working past that
-  for (const client of geminiClients()) {
-    for (const model of ['gemini-3.1-flash-lite', 'gemini-3-flash-preview']) {
-     // 503 "high demand" spikes usually clear in a second or two: retry once before moving on
-     for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt++) {
-      try {
-        const result = await client.models.generateContent({
-          model,
-          contents,
-          // A one-line answer needs no deep reasoning, and thinking tokens count against the cap
-          config: {
-            systemInstruction, temperature: 0.5, maxOutputTokens: 2048, httpOptions: { timeout: 10000 },
-            ...(thinkingSupported ? { thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } } : {})
-          }
-        });
-        if (result.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
-          console.warn(`Scene prompt on ${model} hit the token cap; retrying`);
-          continue;
-        }
-        const line = (result.text || '')
-          .replace(/```[a-z]*/gi, '')
-          .replace(/^(prompt|positive prompt)\s*:\s*/i, '')
-          .replace(/["“”]/g, '')
-          .split('\n').map(l => l.trim()).filter(Boolean).join(', ')
-          .replace(/,\s*,/g, ',')
-          .trim();
-        if (line.length > 20) return res.json({ prompt: line.slice(0, 800), model });
-        break; // answered but unusable (e.g. blocked): try the next model
-      } catch (err: any) {
-        const code = err?.status || err?.code;
-        console.warn(`Scene prompt failed on ${model}:`, code || '', String(err?.message || '').slice(0, 120));
-        if (code === 400 && thinkingSupported) { thinkingSupported = false; continue; } // retry without the thinking setting
-        if (code === 503 || code === 500) { await new Promise(r => setTimeout(r, 1200)); continue; }
-        break;
-      }
-     }
+  const written = await generateText({
+    contents,
+    config: { systemInstruction, temperature: 0.5, maxOutputTokens: 2048 },
+    minimalThinking: true,
+    budgetMs: 20000, // the client gives up after ~24s, so don't keep working past that
+    accept: text => {
+      const line = text
+        .replace(/```[a-z]*/gi, '')
+        .replace(/^(prompt|positive prompt)\s*:\s*/i, '')
+        .replace(/["“”]/g, '')
+        .split('\n').map(l => l.trim()).filter(Boolean).join(', ')
+        .replace(/,\s*,/g, ',')
+        .trim();
+      return line.length > 20 ? line.slice(0, 800) : null;
     }
-  }
+  });
+  if (written) return res.json({ prompt: written.text, model: written.model });
   res.status(502).json({ error: 'Prompt writer unavailable.' });
 });
 
@@ -371,17 +409,14 @@ ${previousSummary || '(none yet: this is the start of the campaign)'}
 NEW TRANSCRIPT:
 ${transcript}`;
 
-  for (const client of geminiClients()) {
-    for (const model of ['gemini-3.1-flash-lite', 'gemini-3-flash-preview']) {
-      try {
-        const result = await client.models.generateContent({ model, contents: prompt, config: { temperature: 0.3, maxOutputTokens: 2048 } });
-        const summary = result.text?.trim();
-        if (summary) return res.json({ summary, model });
-      } catch (err: any) {
-        console.warn(`Summariser failed on ${model}:`, err?.status || err?.code || '', String(err?.message || '').slice(0, 120));
-      }
-    }
-  }
+  const summary = await generateText({
+    contents: prompt,
+    config: { temperature: 0.3, maxOutputTokens: 2048 },
+    minimalThinking: true,
+    budgetMs: 30000,
+    accept: text => text.trim() || null
+  });
+  if (summary) return res.json({ summary: summary.text, model: summary.model });
   res.status(502).json({ error: 'Story summariser unavailable; recent history will keep being sent in full.' });
 });
 
