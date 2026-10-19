@@ -541,7 +541,10 @@ ${sceneText.slice(0, 5000)}`;
         const built = cleanPromptTags([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA, closingTags].filter(Boolean).join(', '));
         return built.length > 20 ? built : null;
       }
-      if (slotMode) return null; // asked for fields and got something else: try the next model
+      if (slotMode) {
+        console.warn(`Prompt writer reply not in the four-field format: ${JSON.stringify(text.slice(0, 220))}`);
+        return null; // asked for fields and got something else: try the next model
+      }
       // Small local models like to add "Here is the prompt:" or explain themselves: keep only the
       // prompt line, and cut it to a length the image model can use
       const lines = text.replace(/```[a-z]*/gi, '').split('\n').map(l => l.replace(/\*+/g, '').trim()).filter(Boolean)
@@ -559,37 +562,40 @@ ${sceneText.slice(0, 5000)}`;
   res.status(502).json({ error: 'Prompt writer unavailable.', quota: report.quota, retryAfterSec: report.retryAfterSec });
 });
 
+const BEATS_INSTRUCTION = `You split one scene of a Cyberpunk RED text roleplay into storyboard shots for an image generator. The user says how many shots.
+
+Answer with exactly that many lines, in story order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else.
+
+Each shot is one still picture: who is in it (at most 2 people, by look and an adult age like "30 year old", never by name; "you" is the protagonist), what they are physically doing, and where. 12 to 22 words. Only things a camera can see: no feelings, themes, sounds, smells, dialogue or backstory.
+
+How to choose the shots:
+- Shot 1 sets the place and the people before the action starts.
+- The middle shots are the main physical actions of the scene, one each, in order. Every shot must show something different: a new pose, a new action, a new person in frame, or a new angle.
+- The last shot is the result or the aftermath.
+- Show the events faithfully, including violence or intimacy, without softening or adding to them.
+- EVERY person is an adult. Give an explicit adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite for a person.
+
+Example, 3 shots, scene: "Rain hammers the alley. You duck behind a dumpster as a ganger with chrome blades lunges, and you fire into his chest. He drops and you walk away."
+SHOT 1: 30 year old man with a shaved head and black leather jacket crouches behind a rusted dumpster in a wet neon alley
+SHOT 2: the man fires a pistol point blank at a 28 year old ganger mid-lunge with chrome blades in his forearms
+SHOT 3: the ganger lies dead on the wet pavement while the man walks away down the neon-lit alley`;
+
 // Storyboard beats: splits one scene into a few consecutive "what a camera sees" moments. The client
 // adds the character's look and the setting to each, so the model only has to describe the action.
 app.post('/api/scene-beats', async (req, res) => {
-  const { sceneText, recent = [], protagonist = '' } = req.body || {};
+  const { sceneText, protagonist = '' } = req.body || {};
   const count = Math.min(6, Math.max(2, Number(req.body?.count) || 4));
   if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
 
-  const systemInstruction = `You split one scene from a Cyberpunk RED text roleplay into ${count} consecutive storyboard shots.
+  const contents = `CHARACTER SHEET for "you": ${String(protagonist).slice(0, 400) || 'a street mercenary'}
 
-Output exactly ${count} lines, one per shot, in story order, and nothing else: no numbering, labels, quotes, markdown or explanation.
-
-Each line is a short visual phrase of 8-16 words: who is doing what, as a camera would see it. Make the shots different from each other (a change of pose, action, or what is in frame), so they read as a sequence.
-
-Rules:
-- Describe people by role or appearance, never by name ("the scarred man", "you" for the protagonist).
-- No dialogue, sounds, smells or feelings; only visible things.
-- Show the events faithfully, including violence or intimacy, without softening or adding to them.
-- Every character is an adult (18+).`;
-
-  const contents = `PROTAGONIST ("you"): ${String(protagonist).slice(0, 500) || 'a street mercenary'}
-
-RECENT STORY (only to learn who is who):
-${(Array.isArray(recent) ? recent : []).slice(-2).map((t: any) => String(t).slice(0, 700)).join('\n---\n') || '(none)'}
-
-SCENE TO SPLIT INTO ${count} SHOTS:
-${sceneText.slice(0, 5000)}`;
+SPLIT THIS SCENE INTO EXACTLY ${count} SHOTS:
+${sceneText.slice(0, 3000)}`;
 
   const report: HelperReport = {};
   const written = await generateText({
     contents,
-    config: { systemInstruction, temperature: 0.6, maxOutputTokens: 2048 },
+    config: { systemInstruction: BEATS_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 },
     minimalThinking: true,
     budgetMs: 14000,
     localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000,
@@ -597,9 +603,14 @@ ${sceneText.slice(0, 5000)}`;
     report,
     accept: text => {
       const lines = text.replace(/```[a-z]*/gi, '').split('\n')
-        .map(l => l.replace(/\*+/g, '').replace(/^\s*(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/^[-•]\s*/, '').replace(/["“”]/g, '').trim())
-        .filter(l => l.split(/\s+/).length >= 3 && !/^(here('|\s?i)s|sure|okay|certainly|note)/i.test(l));
-      return lines.length >= count ? lines.slice(0, count).map(l => l.replace(/[.;:,]+$/, '')).join('\n') : null;
+        .map(l => l.replace(/\*+/g, '').trim())
+        .filter(l => /^(?:shot\s*)?\d+\s*[.):\-]/i.test(l))
+        .map(l => cleanPromptTags(l.replace(/^(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/["“”]/g, ''), 40).replace(/[.;:,]+$/, ''))
+        .filter(l => l.split(/\s+/).length >= 4);
+      const distinct = new Set(lines.map(l => l.toLowerCase()));
+      if (lines.length >= count && distinct.size >= count) return lines.slice(0, count).join('\n');
+      console.warn(`Beat writer reply unusable (${lines.length} of ${count} shots): ${JSON.stringify(text.slice(0, 220))}`);
+      return null;
     }
   });
   if (written) return res.json({ beats: written.text.split('\n'), model: written.model });
