@@ -1,4 +1,3 @@
-import { HUDState } from '../types';
 
 // Deliberately setting-neutral: rain, neon and so on come from the scene itself, so an indoor scene doesn't get wet streets
 export const DEFAULT_STYLE_TAGS = 'cyberpunk, cinematic lighting, highly detailed, sharp focus';
@@ -100,15 +99,15 @@ const pickActionSentences = (text: string, count: number): string[] => {
     .map(x => capAtClause(dropFiller(toStatement(x.sentence)), 26));
 };
 
-export const buildScenePrompt = (sceneText: string, hud?: Partial<HUDState>, styleTags = DEFAULT_STYLE_TAGS) => {
+// `look` is the protagonist's visual description (see describeCharacterLook)
+export const buildScenePrompt = (sceneText: string, look?: string, styleTags = DEFAULT_STYLE_TAGS) => {
   const clean = stripMarkup(sceneText);
   const actions = pickActionSentences(clean, 3);
-  const look = hud?.customDescription?.trim();
   const setting = SETTING_TAGS.filter(([re]) => re.test(clean)).map(([, tag]) => tag).slice(0, 5);
   // Nothing scored (a quiet scene): fall back to the opening sentences rather than an empty prompt
   const scene = actions.length ? actions.join(', ') : clipToSentences(clean.replace(/["“][^"”]*["”]/g, ' ').replace(/[^.!?]*\?/g, ' ').replace(/\s+/g, ' ').trim() || clean, MAX_SCENE_CHARS);
   const parts = [
-    look ? clipToSentences(stripMarkup(look), 160) : '',
+    look ? clipToSentences(stripMarkup(look), 260) : '',
     scene,
     setting.join(', '),
     styleTags.trim()

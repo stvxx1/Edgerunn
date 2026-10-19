@@ -352,13 +352,13 @@ Order matters, earlier tags weigh more:
 Rules:
 - Draw the single most visual moment of the scene, not a summary of it.
 - Describe people by appearance, never by name ("a scarred man in a grey suit", not "Vane").
-- The protagonist is "you" in the scene text: describe them from the protagonist description.
+- The protagonist is "you" in the scene text: describe them from the character sheet line (their look, fashion, visible chrome, what they carry and any wounds), unless the scene itself says otherwise.
 - No dialogue, sounds, smells, backstory or abstract feelings; only things a camera could see.
 - Describe the scene faithfully, including violence or intimacy, without softening or adding to it.
 - Every character is an adult (18+). Never describe anyone as a child or a youthful-looking minor.
 ${style}`;
 
-  const contents = `PROTAGONIST ("you"): ${String(protagonist).slice(0, 500) || 'a street mercenary'}
+  const contents = `PROTAGONIST ("you"), from the character sheet (look, lifepath fashion, visible chrome, gear, wounds): ${String(protagonist).slice(0, 900) || 'a street mercenary'}
 
 RECENT STORY (oldest first, only to learn who and what things look like):
 ${(Array.isArray(recent) ? recent : []).map((t: any) => String(t).slice(0, 1200)).join('\n---\n') || '(none)'}

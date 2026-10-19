@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud } from 'lucide-react';
 import { HUDState } from '../types';
 import { buildScenePrompt, requestScenePrompt, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { describeCharacterLook } from '../utils/characterLook';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
 interface SceneVisualiserProps {
@@ -80,7 +81,9 @@ const saveSettings = (s: VisualiserSettings) => {
 
 export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sceneText, hudState, context, onClose, onGenerate }) => {
   // Starts as the plain summary so something is there instantly; Gemini's rewrite replaces it
-  const [prompt, setPrompt] = useState(() => buildScenePrompt(sceneText, hudState));
+  // The protagonist's look, pulled from the character sheet (description, lifepath, chrome, gear, wounds)
+  const characterLook = useMemo(() => describeCharacterLook(hudState), [hudState]);
+  const [prompt, setPrompt] = useState(() => buildScenePrompt(sceneText, characterLook));
   const [promptSource, setPromptSource] = useState<'writing' | 'ai' | 'basic'>('writing');
   const userEdited = useRef(false);
   const startedFor = useRef<string | null>(null);
@@ -120,14 +123,14 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
       const written = await requestScenePrompt({
         sceneText,
         recent: context,
-        protagonist: hudState.customDescription,
+        protagonist: characterLook,
         modelName: settings.models[settings.backend],
         fresh: force
       });
       if (!userEdited.current) setPrompt(written);
       setPromptSource('ai');
     } catch {
-      if (!userEdited.current) setPrompt(buildScenePrompt(sceneText, hudState));
+      if (!userEdited.current) setPrompt(buildScenePrompt(sceneText, characterLook));
       setPromptSource('basic');
     }
   };
@@ -235,6 +238,11 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           rows={6}
           className="mb-3 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-2 font-sans text-sm text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
         />
+
+        <p className="mb-3 -mt-2 text-[10px] leading-snug text-neutral-500">
+          <span className="text-neutral-400">Your character, from the sheet: </span>
+          {characterLook || 'nothing yet. Describe your look on the HUD tab (EDIT DESCRIPTION).'}
+        </p>
 
         <label className="mb-1 block text-neutral-500">NEGATIVE PROMPT</label>
         <textarea
