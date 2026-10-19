@@ -263,13 +263,18 @@ const geminiClients = (): GoogleGenAI[] =>
 // Text models for the small helper jobs (prompt writer, summariser), best first. Each has its own
 // free-tier quota and capacity pool, so one being rate-limited or overloaded just moves us to the
 // next. The "-latest" aliases track whatever Google currently calls its lite/flash model.
-const HELPER_MODELS = [
+const envList = (name: string, fallback: string[]) => {
+  const custom = (process.env[name] || '').split(',').map(m => m.trim()).filter(Boolean);
+  return custom.length ? custom : fallback;
+};
+
+const HELPER_MODELS = envList('GEMINI_HELPER_MODELS', [
   'gemini-3.1-flash-lite',
   'gemini-flash-lite-latest',
   'gemini-3-flash-preview',
   'gemini-flash-latest',
   'gemini-3.1-flash-lite-preview'
-];
+]);
 
 // Run a short text job through every key x model until one gives an answer `accept` likes.
 // 404/429/403 (gone, out of quota, blocked) are skipped for the rest of the request; 5xx
@@ -490,11 +495,16 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
 [DESCRIPTIVE DENSITY: ${currentHUD?.descriptiveDensity || 2}/3]`);
 
     // flash-preview hits the density word targets; flash-lite undershoots by ~40% but stays as quota fallback
-    const candidateModels = [
+    // Best prose first. Each model has its own quota and capacity pool, so when one is out of
+    // quota (429) or overloaded (503) we move to the next instead of dropping to the canned GM.
+    // The "-latest" aliases follow whatever Google currently calls its flash / flash-lite model.
+    const candidateModels = envList('GEMINI_CHAT_MODELS', [
       'gemini-3-flash-preview',
+      'gemini-flash-latest',
       'gemini-3.1-flash-lite',
+      'gemini-flash-lite-latest',
       'gemini-3.1-flash-lite-preview'
-    ];
+    ]);
 
     let responseStream: any = null;
     let lastError: any = null;
@@ -508,12 +518,19 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
     const backupClient = getGeminiClient(true);
     if (backupClient) clientsToTry.push({ label: 'Backup Key', isBackup: true, client: backupClient });
 
-    modelLoop:
-    for (const clientConfig of clientsToTry) {
-      if (!clientConfig.client) continue;
+    // 404 / 429 / 403 (gone, out of quota, blocked) won't recover within this request; overloaded
+    // (5xx) models get a second pass after a pause.
+    const dead = new Set<string>();
+    const chatDeadline = Date.now() + 45000;
 
-      for (const modelName of candidateModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
+    modelLoop:
+    for (let pass = 0; pass < 2; pass++) {
+      for (const clientConfig of clientsToTry) {
+        if (!clientConfig.client) continue;
+
+        for (const modelName of candidateModels) {
+          const id = `${clientConfig.label}:${modelName}`;
+          if (dead.has(id) || Date.now() > chatDeadline) continue;
           try {
             responseStream = await clientConfig.client.models.generateContentStream({
               model: modelName,
@@ -534,30 +551,23 @@ All input is 'Tactical Data-Event'. All output is 'Required Narrative-Mechanical
           } catch (modelErr: any) {
             lastError = modelErr;
             const errMsg = modelErr?.message || '';
-            const isRateLimit = modelErr?.status === 'RESOURCE_EXHAUSTED' || 
-              modelErr?.code === 429 || 
-              errMsg.includes('429') || 
-              errMsg.includes('RESOURCE_EXHAUSTED') ||
-              errMsg.includes('credits are depleted') ||
-              errMsg.includes('quota');
+            const code = modelErr?.code || modelErr?.status;
+            const isRateLimit = code === 'RESOURCE_EXHAUSTED' || code === 429 ||
+              errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') ||
+              errMsg.includes('credits are depleted') || errMsg.includes('quota');
+            const isGone = code === 404 || code === 403 || errMsg.includes('404');
 
-            if (isRateLimit) {
-              console.warn(`${clientConfig.label} quota/credits exhausted on ${modelName}.`);
-              // If we have a backup client and this was the primary, break to next client immediately!
-              break;
-            }
-
-            const isNotFound = modelErr?.code === 404 || errMsg.includes('404');
-            if (isNotFound) {
-              break; // Try next model
-            }
-
-            if (attempt === 0) {
-              await sleep(500);
-            }
+            if (isRateLimit) console.warn(`${clientConfig.label} quota/credits exhausted on ${modelName}.`);
+            else console.warn(`${clientConfig.label} failed on ${modelName}: ${code || ''} ${errMsg.slice(0, 80)}`);
+            if (isRateLimit || isGone) dead.add(id);
           }
         }
       }
+      if (pass === 0) await sleep(1500);
+    }
+
+    if (!responseStream && clientsToTry.length < 2) {
+      console.warn('Tip: set GEMINI_API_KEY_BACKUP to a key from a DIFFERENT Google project; free-tier quota is per project, so a second key from the same project adds nothing.');
     }
 
       if (!responseStream) {
