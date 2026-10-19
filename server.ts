@@ -421,6 +421,14 @@ const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|henta
 // where they only crowd out the tags that matter.
 const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency/i;
 
+// Narration leaks "you"/"your" into prompts; an image model can't use them. Turn them into who they are.
+const depersonalise = (text: string, protagonist: string) => {
+  const female = /\b(woman|female|she|her|girl)\b/i.test(protagonist);
+  return text
+    .replace(/\byour\b/gi, female ? 'her' : 'his')
+    .replace(/\byou(?:'re|'ve|'ll|'d)?\b/gi, female ? 'the woman' : 'the man');
+};
+
 // Tidy a comma-separated prompt: drop non-visual tags and repeats, cap the length
 const cleanPromptTags = (line: string, maxWords = 80) => {
   const seen = new Set<string>();
@@ -450,22 +458,23 @@ Rules:
 - Pick the single most visual moment. Ignore the rest of the scene.
 - Only things a camera can see: no feelings, themes, sounds, smells, backstory or abstract words.
 - Describe people by appearance, never by name. "You" is the protagonist: use the character sheet line.
-- Show the scene faithfully, including violence or intimacy, without softening or adding to it.
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it. For a sex act, name it and the position in plain tag-style words (for example: couple having sex, missionary, cowgirl, from behind, oral) instead of narrating it, and say who is where.
+- Never write "you" or "your": say "the man" or "the woman" (the character sheet says which the protagonist is).
 - EVERY person is an adult. Always give an explicit adult age of 21 or more, even if the scene gives none. Never use words like girl, teen, young, little or petite for a person.
 
-Example 1
-SCENE: Rain hammers the alley. You duck behind a dumpster as a ganger with chrome blades lunges, and you fire your pistol into his chest.
-SUBJECTS: 30 year old muscular man with a shaved head and a black leather jacket, 28 year old ganger with chrome blades in his forearms
-ACTION: the first man fires a pistol point blank into the lunging ganger, who is mid-leap with blades out
-SETTING: narrow wet alley, rusted dumpster, neon signs, steam
-CAMERA: low angle medium shot, harsh neon rim lighting
+Example A (only shows the format; never reuse its people, places or words)
+SCENE: At the noodle stall the cook slams a cleaver through a duck while a customer in a rain jacket waves a credit chip at him.
+SUBJECTS: 45 year old stocky cook with a shaved head and a stained apron, 32 year old customer in a yellow rain jacket
+ACTION: the cook brings a cleaver down through a roast duck on a chopping block while the customer holds out a glowing credit chip
+SETTING: cramped night market noodle stall, steam, paper lanterns, wet street
+CAMERA: medium shot from the customer's side, warm lantern light
 
-Example 2
-SCENE: In the penthouse you pull her onto the bed and kiss her neck while she tugs at your shirt.
-SUBJECTS: 35 year old broad-shouldered man with short dark hair, 29 year old woman with long red hair in a silk slip
-ACTION: the man kneels over the woman on the bed, kissing her neck while she pulls his shirt open
-SETTING: luxury penthouse bedroom, rumpled sheets, city lights through a large window
-CAMERA: close medium shot, warm dim lamp lighting`;
+Example B (only shows the format; never reuse its people, places or words)
+SCENE: In the garage you wrestle a bike engine onto the bench while she holds the lamp.
+SUBJECTS: 38 year old woman with a ponytail in grease-stained overalls, 41 year old man with a beard in a grey tank top
+ACTION: the man lifts a motorbike engine onto a workbench while the woman holds a work lamp over it
+SETTING: cluttered garage, tools on a pegboard, oil stains, a bike on a stand
+CAMERA: wide shot, harsh overhead light`;
 
 // Slot mode (for small local models): the model only fills in four short fields and the code builds
 // the prompt around them, so it can't ramble or forget the quality tags.
@@ -538,7 +547,7 @@ ${sceneText.slice(0, 5000)}`;
       // Slot answer (labelled fields): build the prompt around them
       const slots = parseSlots(text);
       if (slots) {
-        const built = cleanPromptTags([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA, closingTags].filter(Boolean).join(', '));
+        const built = cleanPromptTags(depersonalise([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA].filter(Boolean).join(', '), String(protagonist)) + ', ' + closingTags);
         return built.length > 20 ? built : null;
       }
       if (slotMode) {
@@ -605,7 +614,7 @@ ${sceneText.slice(0, 3000)}`;
       const lines = text.replace(/```[a-z]*/gi, '').split('\n')
         .map(l => l.replace(/\*+/g, '').trim())
         .filter(l => /^(?:shot\s*)?\d+\s*[.):\-]/i.test(l))
-        .map(l => cleanPromptTags(l.replace(/^(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/["“”]/g, ''), 40).replace(/[.;:,]+$/, ''))
+        .map(l => cleanPromptTags(depersonalise(l.replace(/^(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/["“”]/g, ''), String(protagonist)), 40).replace(/[.;:,]+$/, ''))
         .filter(l => l.split(/\s+/).length >= 4);
       const distinct = new Set(lines.map(l => l.toLowerCase()));
       if (lines.length >= count && distinct.size >= count) return lines.slice(0, count).join('\n');
