@@ -100,13 +100,15 @@ app.post('/api/dice', (req, res) => {
 // Scene Visualiser — image generation via AI Horde or a local ComfyUI (submit, then poll).
 // Job ids carry a prefix for local jobs so polling/cancel route to the right backend.
 app.post('/api/generate-image', async (req, res) => {
-  const { backend, prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed } = req.body || {};
+  const { backend, prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, sampler, clipSkip, seed } = req.body || {};
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return res.status(400).json({ error: 'A prompt is required.' });
   }
   try {
     const submit = backend === 'comfyui' ? submitComfyJob : submitHordeJob;
-    const job = await submit({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed });
+    // sampler and clip skip are ComfyUI concepts; the Horde keeps its own defaults
+    const extra = backend === 'comfyui' ? { sampler, clipSkip } : {};
+    const job = await submit({ prompt, negativePrompt, model, nsfw, width, height, steps, cfgScale, seed, ...extra });
     res.status(202).json(job);
   } catch (error: any) {
     console.error(`${backend === 'comfyui' ? 'ComfyUI' : 'AI Horde'} submit failed:`, error?.message, error?.details || '');

@@ -34,6 +34,9 @@ export interface SceneImageRequest {
   width?: number;
   height?: number;
   steps?: number;
+  cfgScale?: number;
+  sampler?: string;
+  clipSkip?: number;
 }
 
 const POLL_MS = 4000;

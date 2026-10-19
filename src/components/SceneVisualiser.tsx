@@ -36,6 +36,9 @@ interface VisualiserSettings {
   nsfw: boolean;
   aspect: AspectKey;
   steps: number;
+  cfg: number;
+  sampler: string;
+  clipSkip: number;
   negativePrompt: string;
 }
 
@@ -46,8 +49,14 @@ const DEFAULT_SETTINGS: VisualiserSettings = {
   nsfw: false,
   aspect: 'portrait',
   steps: 25,
+  cfg: 6,
+  sampler: 'dpmpp_2m',
+  clipSkip: 1,
   negativePrompt: DEFAULT_NEGATIVE_PROMPT
 };
+
+// Samplers offered for local ComfyUI runs ('lcm' is for LCM-distilled models)
+const SAMPLERS = ['dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde', 'euler', 'euler_ancestral', 'lcm'];
 
 const loadSettings = (): VisualiserSettings => {
   try {
@@ -122,7 +131,11 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         nsfw: settings.nsfw,
         width,
         height,
-        steps: settings.steps
+        // Horde jobs below 10 steps aren't accepted; local runs can go as low as 1
+        steps: Math.max(settings.backend === 'comfyui' ? 1 : 10, settings.steps),
+        cfgScale: settings.cfg,
+        sampler: settings.sampler,
+        clipSkip: settings.clipSkip
       });
       onClose();
     } catch (err: any) {
@@ -228,16 +241,53 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-neutral-500">STEPS: {settings.steps}</label>
+            <label className="mb-1 block text-neutral-500">STEPS: {Math.max(isLocal ? 1 : 10, settings.steps)}</label>
             <input
               type="range"
-              min={10}
+              min={isLocal ? 1 : 10}
               max={50}
-              value={settings.steps}
+              value={Math.max(isLocal ? 1 : 10, settings.steps)}
               onChange={e => update({ steps: Number(e.target.value) })}
               className="w-full accent-fuchsia-500"
             />
           </div>
+          <div>
+            <label className="mb-1 block text-neutral-500">CFG: {settings.cfg}</label>
+            <input
+              type="range"
+              min={1}
+              max={12}
+              step={0.5}
+              value={settings.cfg}
+              onChange={e => update({ cfg: Number(e.target.value) })}
+              className="w-full accent-fuchsia-500"
+            />
+          </div>
+          {isLocal && (
+            <>
+              <div>
+                <label className="mb-1 block text-neutral-500">SAMPLER</label>
+                <select
+                  value={settings.sampler}
+                  onChange={e => update({ sampler: e.target.value })}
+                  className="w-full rounded border border-neutral-800 bg-neutral-900 p-2 text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
+                >
+                  {SAMPLERS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-neutral-500">CLIP SKIP</label>
+                <select
+                  value={settings.clipSkip}
+                  onChange={e => update({ clipSkip: Number(e.target.value) })}
+                  className="w-full rounded border border-neutral-800 bg-neutral-900 p-2 text-neutral-200 focus:border-fuchsia-500 focus:outline-none"
+                >
+                  <option value={1}>1 (default)</option>
+                  <option value={2}>2 (many anime models)</option>
+                </select>
+              </div>
+            </>
+          )}
           {isLocal ? (
             <span className="self-end pb-1 text-[10px] text-neutral-500">Local GPU · no content filter</span>
           ) : (

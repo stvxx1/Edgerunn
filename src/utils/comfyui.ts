@@ -81,19 +81,28 @@ const snap = (n: number | undefined, fallback: number) => {
 };
 
 // Standard txt2img graph in ComfyUI's API format. Node ids are arbitrary but must be consistent.
-const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => ({
+// Samplers the visualiser offers; LCM-style samplers need the sgm_uniform scheduler, the rest use karras
+const schedulerFor = (sampler: string) => (sampler === 'lcm' ? 'sgm_uniform' : 'karras');
+
+const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => {
+  const sampler = req.sampler || 'dpmpp_2m';
+  // Clip skip 2 (common for anime SD1.5 models) = stop at the second-to-last CLIP layer
+  const useClipSkip = (req.clipSkip ?? 1) > 1;
+  const clip: [string, number] = useClipSkip ? ['10', 0] : ['4', 1];
+  return {
   '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ckpt } },
+  ...(useClipSkip ? { '10': { class_type: 'CLIPSetLastLayer', inputs: { clip: ['4', 1], stop_at_clip_layer: -Math.min(4, req.clipSkip as number) } } } : {}),
   '5': { class_type: 'EmptyLatentImage', inputs: { width: snap(req.width, 832), height: snap(req.height, 1216), batch_size: 1 } },
-  '6': { class_type: 'CLIPTextEncode', inputs: { text: req.prompt.trim(), clip: ['4', 1] } },
-  '7': { class_type: 'CLIPTextEncode', inputs: { text: req.negativePrompt?.trim() || '', clip: ['4', 1] } },
+  '6': { class_type: 'CLIPTextEncode', inputs: { text: req.prompt.trim(), clip } },
+  '7': { class_type: 'CLIPTextEncode', inputs: { text: req.negativePrompt?.trim() || '', clip } },
   '3': {
     class_type: 'KSampler',
     inputs: {
       seed: req.seed ? Number(req.seed) : Math.floor(Math.random() * 2 ** 32),
-      steps: Math.min(60, Math.max(5, req.steps ?? 25)),
-      cfg: req.cfgScale ?? 6,
-      sampler_name: req.sampler || 'dpmpp_2m',
-      scheduler: 'karras',
+      steps: Math.min(60, Math.max(1, req.steps ?? 25)),
+      cfg: Math.min(30, Math.max(1, req.cfgScale ?? 6)),
+      sampler_name: sampler,
+      scheduler: schedulerFor(sampler),
       denoise: 1,
       model: ['4', 0],
       positive: ['6', 0],
@@ -103,7 +112,8 @@ const buildWorkflow = (req: HordeGenerateRequest, ckpt: string) => ({
   },
   '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
   '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'edgerunn', images: ['8', 0] } }
-});
+  };
+};
 
 export const submitComfyJob = async (req: HordeGenerateRequest): Promise<{ id: string; kudos: number }> => {
   let ckpt = req.model;
