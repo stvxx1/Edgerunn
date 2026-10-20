@@ -1,4 +1,4 @@
-import { withPonyScore, offlineBeats } from './src/utils/scenePrompt';
+import { withPonyScore, offlineBeats, tidyPonyTags } from './src/utils/scenePrompt';
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -459,7 +459,7 @@ Rules:
 - Pick the single most visual moment. Ignore the rest of the scene.
 - Only things a camera can see: no feelings, themes, sounds, smells, backstory or abstract words.
 - Describe people by appearance, never by name. "You" is the protagonist: use the character sheet line.
-- Show the scene faithfully, including violence or intimacy, without softening or adding to it. For a sex act, name it and the position in plain tag-style words (for example: couple having sex, missionary, cowgirl, from behind, oral) instead of narrating it, and say who is where.
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it. For a sex act, name it and the one position that matches the moment in plain tag-style words instead of narrating it, and say who is where.
 - Never write "you" or "your": say "the man" or "the woman" (the character sheet says which the protagonist is).
 - EVERY person is an adult. Always give an explicit adult age of 21 or more, even if the scene gives none. Never use words like girl, teen, young, little or petite for a person.
 
@@ -481,13 +481,15 @@ CAMERA: wide shot, harsh overhead light`;
 const PONY_SLOT_INSTRUCTION = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it as image tags for a Pony Diffusion model.
 
 Answer with exactly these four lines and nothing else. Every line is comma-separated Danbooru-style tags, not sentences:
-SUBJECTS: people count tags (1boy, 1girl, 2girls, 2boys, hetero), then for each person an adult age like "30 year old man", hair, build, clothing or nude, cyberware
-ACTION: the pose and action as tags (standing, kneeling, sitting, holding gun, fighting, sex, from behind, missionary, cowgirl position, oral, bent over) and who touches what
-SETTING: place and objects as tags (indoors, bedroom, bed, alley, neon lights, rain, window)
-CAMERA: framing as tags (from side, from above, close-up, cowboy shot, looking at viewer, dim lighting)
+SUBJECTS: how many people and which sex (1boy, 1girl, 2girls...), then for each person an adult age such as "30 year old man", hair, build, and clothing or nude
+ACTION: the single pose or action happening in this moment, and who touches what
+SETTING: the place and its main objects
+CAMERA: how the shot is framed
 
 Rules:
+- Use only tags that are true of THIS shot. Never list several poses or sex positions: choose the one that matches the moment.
 - At most 2 people. Pick the single most visual moment; ignore the rest of the scene.
+- Leave out weapons, armour, gear and cyberware unless the shot is about them.
 - Tags for things a camera can see only: no feelings, themes, sounds, backstory or full sentences. Never write "you" or "your".
 - Show the scene faithfully, including violence or intimacy, without softening or adding to it. Name a sex act and its position with plain tags.
 - EVERY person is an adult: always include an adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite to describe a person's age.
@@ -495,9 +497,9 @@ Rules:
 Example (only shows the format; never reuse its people, places or words)
 SCENE: At the noodle stall the cook chops a duck while a customer waves a credit chip.
 SUBJECTS: 1boy, 1girl, 45 year old man, stocky, shaved head, apron, 32 year old woman, yellow raincoat
-ACTION: standing, holding cleaver, chopping, holding credit chip, facing each other
-SETTING: outdoors, night market, noodle stall, steam, paper lanterns, wet street
-CAMERA: from side, cowboy shot, warm lantern light`;
+ACTION: holding cleaver, chopping duck, customer holding credit chip, facing each other
+SETTING: night market, noodle stall, steam, paper lanterns
+CAMERA: cowboy shot, warm light`;
 
 // Slot mode (for small local models): the model only fills in four short fields and the code builds
 // the prompt around them, so it can't ramble or forget the quality tags.
@@ -577,7 +579,8 @@ ${sceneText.slice(0, 5000)}`;
         const parts = isPony
           ? [slots.SUBJECTS, slots.CAMERA, slots.ACTION, slots.SETTING] // the Pony guide's order: subjects, composition, action, background
           : [slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA];
-        const body = depersonalise(parts.filter(Boolean).join(', '), String(protagonist));
+        const body0 = depersonalise(parts.filter(Boolean).join(', '), String(protagonist));
+        const body = isPony ? tidyPonyTags(body0) : body0;
         const styleFront = isPony ? (/real|photo|cyber/i.test(String(modelName)) ? 'realistic, ' : 'source_anime, ') : '';
         const built = cleanPromptTags(`${styleFront}${body}, ${closingTags}`, 90);
         return built.length > 20 ? withScore(built) : null;
@@ -625,13 +628,13 @@ SHOT 2: the cook passes a steaming bowl across the counter to the customer, who 
 
 const BEATS_PONY_INSTRUCTION = `You turn a scene of a Cyberpunk RED text roleplay into storyboard shots for a Pony Diffusion image model. The scene is already divided into numbered PARTs.
 
-Write exactly one shot for each PART, in order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else. Each shot is a line of comma-separated Danbooru-style tags (not a sentence): people count (1boy, 1girl, hetero), each person's adult age, hair, build and clothing or nude, the pose and action (standing, kneeling, sex, from behind, holding gun), and the place.
+Write exactly one shot for each PART, in order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else. Each shot is a line of comma-separated Danbooru-style tags (not a sentence): how many people and which sex, each person's adult age, hair, build and clothing or nude, the one pose or action in that part, and the place. Never list several poses.
 
 ${BEATS_RULES}
 
 Example (only shows the format; never reuse its people, places or words)
 PART 1: At the noodle stall the cook chops a duck. A customer in a rain jacket waves a credit chip.
-SHOT 1: 1boy, 1girl, 45 year old man, stocky, apron, 32 year old woman, yellow raincoat, standing, holding cleaver, holding credit chip, night market, noodle stall`;
+SHOT 1: 1boy, 1girl, 45 year old man, stocky, apron, 32 year old woman, yellow raincoat, holding cleaver, holding credit chip, night market, noodle stall`;
 
 // Cut the scene into `count` consecutive stretches of whole sentences (quoted speech dropped)
 const splitSceneIntoParts = (sceneText: string, count: number): string[] => {
@@ -674,7 +677,8 @@ ${parts.map((t, i) => `PART ${i + 1}: ${t.slice(0, 700)}`).join('\n\n')}`;
       for (const raw of text.replace(/```[a-z]*/gi, '').split('\n')) {
         const m = raw.replace(/\*+/g, '').trim().match(/^(?:shot\s*)?(\d+)\s*[.):\-]\s*(.+)$/i);
         if (!m) continue;
-        const line = cleanPromptTags(depersonalise(m[2].replace(/["“”]/g, ''), String(protagonist)), 40).replace(/[.;:,]+$/, '');
+        const cleaned = cleanPromptTags(depersonalise(m[2].replace(/["“”]/g, ''), String(protagonist)), 40).replace(/[.;:,]+$/, '');
+        const line = isPony ? tidyPonyTags(cleaned) : cleaned;
         if (line.split(/\s+/).length >= 4) byNumber.set(Number(m[1]), line);
       }
       const fromModel = parts.filter((_, i) => byNumber.has(i + 1)).length;

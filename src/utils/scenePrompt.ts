@@ -9,6 +9,37 @@ export const PONY_NEGATIVE_TAGS = 'score_6, score_5, score_4';
 const PONY_NEGATIVE_EXTRA = 'text, censored, deformed, bad hand, child, loli, shota, young';
 export const isPonyModel = (name?: string) => /pony/i.test(name || '');
 const SEXUAL = /\b(sex|nude|naked|nipples?|pussy|vagina\w*|cock|penis|anal|oral|blowjob|topless|cum|cumshot|fellatio|missionary|cowgirl position|doggystyle|from behind)\b/i;
+// Small models copy whatever they were shown and stack incompatible tags. This keeps one sex position,
+// drops gear that has no place in an intimate shot, and makes sure the people-count tags exist.
+const POSITION_TAG = /^(missionary|cowgirl position|reverse cowgirl|doggystyle|prone bone|spooning|standing sex|mating press|bent over|girl on top|boy on top|sex from behind|from behind)$/i;
+// A job title is not something a camera sees
+const ROLE_TAG = /^(corporate executive|executive|street mercenary|mercenary|netrunner|street techie|techie|medic|street fixer|fixer|road nomad|nomad|journalist|lawman|rockerboy)$/i;
+const GEAR_TAG = /\b(smg|rifle|pistol|shotgun|gun|armed|weapon|armor|armour|kevlar|jacket|holster|blade|grenade)\b/i;
+export const tidyPonyTags = (line: string): string => {
+  const sexual = SEXUAL.test(line);
+  const out: string[] = [];
+  let positionKept = false;
+  for (const raw of line.split(',')) {
+    const tag = raw.trim();
+    if (!tag) continue;
+    if (ROLE_TAG.test(tag)) continue;
+    if (sexual && GEAR_TAG.test(tag)) continue;
+    if (POSITION_TAG.test(tag)) {
+      if (positionKept) continue;
+      positionKept = true;
+    }
+    out.push(tag);
+  }
+  const men = (line.match(/\b\d+ year old (?:man|male|guy)\b/gi) || []).length;
+  const women = (line.match(/\b\d+ year old (?:woman|female|lady)\b/gi) || []).length;
+  // each sex needs its own count tag (1boy, 1girl, 2girls...), placed first
+  const add: string[] = [];
+  if (women && !out.some(t => /^\d+girls?$/i.test(t))) add.push(`${women}girl${women > 1 ? 's' : ''}`);
+  if (men && !out.some(t => /^\d+boys?$/i.test(t))) add.push(`${men}boy${men > 1 ? 's' : ''}`);
+  if (men && women && !out.some(t => /^hetero$/i.test(t))) add.push('hetero');
+  out.unshift(...add);
+  return out.join(', ');
+};
 export const withPonyScore = (prompt: string, model?: string) => {
   if (!isPonyModel(model) || /score_9/i.test(prompt)) return prompt;
   const rating = SEXUAL.test(prompt) && !/rating_/i.test(prompt) ? ', rating_explicit' : '';
