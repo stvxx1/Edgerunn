@@ -1,3 +1,4 @@
+import { withPonyScore } from './src/utils/scenePrompt';
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -519,10 +520,10 @@ app.post('/api/scene-prompt', async (req, res) => {
     : 'Style: photographic model. Write it like a photo caption (e.g. "photo of a ..."), finish with tags like RAW photo, sharp focus, detailed skin, cinematic lighting.';
 
   const isPony = /pony/i.test(String(modelName));
-  const withScore = (line: string) => (isPony && !/score_9/i.test(line) ? `score_9, score_8_up, score_7_up, ${line}` : line);
+  const withScore = (line: string) => withPonyScore(line, isPony ? 'pony' : '');
   const isAnime = ANIME_MODEL.test(String(modelName));
   const closingTags = isPony
-    ? (/real|photo|cyber/i.test(String(modelName)) ? 'realistic, photo \\(medium\\), detailed skin, sharp focus' : 'source_anime, highly detailed')
+    ? 'depth of field, highly detailed, detailed skin'
     : isAnime ? 'masterpiece, best quality, highly detailed' : 'RAW photo, sharp focus, detailed skin, cinematic lighting';
   const slotMode = process.env.HELPER_PREFER === 'local'; // small local models do better with short fields than with free writing
 
@@ -573,7 +574,12 @@ ${sceneText.slice(0, 5000)}`;
       // Slot answer (labelled fields): build the prompt around them
       const slots = parseSlots(text);
       if (slots) {
-        const built = cleanPromptTags(depersonalise([slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA].filter(Boolean).join(', '), String(protagonist)) + ', ' + closingTags);
+        const parts = isPony
+          ? [slots.SUBJECTS, slots.CAMERA, slots.ACTION, slots.SETTING] // the Pony guide's order: subjects, composition, action, background
+          : [slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA];
+        const body = depersonalise(parts.filter(Boolean).join(', '), String(protagonist));
+        const styleFront = isPony ? (/real|photo|cyber/i.test(String(modelName)) ? 'realistic, ' : 'source_anime, ') : '';
+        const built = cleanPromptTags(`${styleFront}${body}, ${closingTags}`, 90);
         return built.length > 20 ? withScore(built) : null;
       }
       if (slotMode) {
