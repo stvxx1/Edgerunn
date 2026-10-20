@@ -202,7 +202,7 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
     setBeatNote('');
     const count = settings.storyboardFrames;
     try {
-      const written = await requestSceneBeats({ sceneText, recent: context, protagonist: characterLook, count });
+      const written = await requestSceneBeats({ sceneText, recent: context, protagonist: characterLook, count, modelName: settings.models[settings.backend] });
       setBeats(written.slice(0, count));
       setBeatNote('✨ written from the scene');
     } catch (err) {

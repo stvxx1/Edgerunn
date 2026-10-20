@@ -1,4 +1,4 @@
-import { withPonyScore } from './src/utils/scenePrompt';
+import { withPonyScore, offlineBeats } from './src/utils/scenePrompt';
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -603,55 +603,86 @@ ${sceneText.slice(0, 5000)}`;
   res.status(502).json({ error: 'Prompt writer unavailable.', quota: report.quota, retryAfterSec: report.retryAfterSec });
 });
 
-const BEATS_INSTRUCTION = `You split one scene of a Cyberpunk RED text roleplay into storyboard shots for an image generator. The user says how many shots.
-
-Answer with exactly that many lines, in story order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else.
-
-Each shot is one still picture: who is in it (at most 2 people, by look and an adult age like "30 year old", never by name; "you" is the protagonist), what they are physically doing, and where. 12 to 22 words. Only things a camera can see: no feelings, themes, sounds, smells, dialogue or backstory.
-
-How to choose the shots:
-- Shot 1 sets the place and the people before the action starts.
-- The middle shots are the main physical actions of the scene, one each, in order. Every shot must show something different: a new pose, a new action, a new person in frame, or a new angle.
-- The last shot is the result or the aftermath.
+// Storyboard shots. The scene is cut into equal consecutive PARTs in code, and the model only writes one
+// shot per part: small models are bad at deciding where to split, but fine at describing a short passage.
+const BEATS_RULES = `Rules:
+- Show the most visual moment of that part: who is doing what, as a camera would see it. At most 2 people, described by look and an adult age like "30 year old", never by name. "You" is the protagonist.
+- Only things a camera can see: no feelings, themes, sounds, smells, dialogue or backstory.
 - Show the events faithfully, including violence or intimacy, without softening or adding to them.
-- EVERY person is an adult. Give an explicit adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite for a person.
+- EVERY person is an adult: always give an explicit adult age of 21 or more, even if the part gives none. Never use girl, teen, young, little or petite for a person.`;
 
-Example, 3 shots, scene: "Rain hammers the alley. You duck behind a dumpster as a ganger with chrome blades lunges, and you fire into his chest. He drops and you walk away."
-SHOT 1: 30 year old man with a shaved head and black leather jacket crouches behind a rusted dumpster in a wet neon alley
-SHOT 2: the man fires a pistol point blank at a 28 year old ganger mid-lunge with chrome blades in his forearms
-SHOT 3: the ganger lies dead on the wet pavement while the man walks away down the neon-lit alley`;
+const BEATS_INSTRUCTION = `You turn a scene of a Cyberpunk RED text roleplay into storyboard shots for an image generator. The scene is already divided into numbered PARTs.
 
-// Storyboard beats: splits one scene into a few consecutive "what a camera sees" moments. The client
-// adds the character's look and the setting to each, so the model only has to describe the action.
+Write exactly one shot for each PART, in order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else. Each shot is one still picture of 12 to 22 words.
+
+${BEATS_RULES}
+
+Example (only shows the format; never reuse its people, places or words)
+PART 1: At the noodle stall the cook chops a duck. A customer in a rain jacket waves a credit chip.
+PART 2: The cook hands over a steaming bowl and the customer sits on a stool.
+SHOT 1: 45 year old stocky cook in an apron brings a cleaver down through a roast duck while a 32 year old customer in a yellow rain jacket holds out a credit chip
+SHOT 2: the cook passes a steaming bowl across the counter to the customer, who sits on a metal stool under paper lanterns`;
+
+const BEATS_PONY_INSTRUCTION = `You turn a scene of a Cyberpunk RED text roleplay into storyboard shots for a Pony Diffusion image model. The scene is already divided into numbered PARTs.
+
+Write exactly one shot for each PART, in order, each starting "SHOT 1:", "SHOT 2:" and so on, and nothing else. Each shot is a line of comma-separated Danbooru-style tags (not a sentence): people count (1boy, 1girl, hetero), each person's adult age, hair, build and clothing or nude, the pose and action (standing, kneeling, sex, from behind, holding gun), and the place.
+
+${BEATS_RULES}
+
+Example (only shows the format; never reuse its people, places or words)
+PART 1: At the noodle stall the cook chops a duck. A customer in a rain jacket waves a credit chip.
+SHOT 1: 1boy, 1girl, 45 year old man, stocky, apron, 32 year old woman, yellow raincoat, standing, holding cleaver, holding credit chip, night market, noodle stall`;
+
+// Cut the scene into `count` consecutive stretches of whole sentences (quoted speech dropped)
+const splitSceneIntoParts = (sceneText: string, count: number): string[] => {
+  const clean = sceneText.replace(/["“][^"”]*["”]/g, ' ').replace(/\s+/g, ' ').trim();
+  const sentences = (clean.match(/[^.!?]+[.!?]*/g) || []).map(x => x.trim()).filter(x => x.length > 12);
+  const n = Math.min(count, sentences.length);
+  const parts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor((i * sentences.length) / n);
+    const to = Math.max(from + 1, Math.floor(((i + 1) * sentences.length) / n));
+    parts.push(sentences.slice(from, to).join(' '));
+  }
+  return parts;
+};
+
 app.post('/api/scene-beats', async (req, res) => {
-  const { sceneText, protagonist = '' } = req.body || {};
+  const { sceneText, protagonist = '', modelName = '' } = req.body || {};
   const count = Math.min(6, Math.max(2, Number(req.body?.count) || 4));
   if (!sceneText || typeof sceneText !== 'string') return res.status(400).json({ error: 'sceneText is required.' });
+  const parts = splitSceneIntoParts(sceneText.slice(0, 4000), count);
+  if (!parts.length) return res.status(400).json({ error: 'Not enough scene text to split.' });
+  const isPony = /pony/i.test(String(modelName));
 
   const contents = `CHARACTER SHEET for "you": ${String(protagonist).slice(0, 400) || 'a street mercenary'}
 
-SPLIT THIS SCENE INTO EXACTLY ${count} SHOTS:
-${sceneText.slice(0, 3000)}`;
+${parts.map((t, i) => `PART ${i + 1}: ${t.slice(0, 700)}`).join('\n\n')}`;
 
   const report: HelperReport = {};
   const written = await generateText({
     contents,
-    config: { systemInstruction: BEATS_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 },
+    config: { systemInstruction: isPony ? BEATS_PONY_INSTRUCTION : BEATS_INSTRUCTION, temperature: 0.3, maxOutputTokens: 1024 },
     minimalThinking: true,
     budgetMs: 14000,
     localTimeoutMs: Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 150000,
     preferLocal: process.env.HELPER_PREFER === 'local',
     report,
     accept: text => {
-      const lines = text.replace(/```[a-z]*/gi, '').split('\n')
-        .map(l => l.replace(/\*+/g, '').trim())
-        .filter(l => /^(?:shot\s*)?\d+\s*[.):\-]/i.test(l))
-        .map(l => cleanPromptTags(depersonalise(l.replace(/^(?:shot\s*)?\d+\s*[.):\-]\s*/i, '').replace(/["“”]/g, ''), String(protagonist)), 40).replace(/[.;:,]+$/, ''))
-        .filter(l => l.split(/\s+/).length >= 4);
-      const distinct = new Set(lines.map(l => l.toLowerCase()));
-      if (lines.length >= count && distinct.size >= count) return lines.slice(0, count).join('\n');
-      console.warn(`Beat writer reply unusable (${lines.length} of ${count} shots): ${JSON.stringify(text.slice(0, 220))}`);
-      return null;
+      // "SHOT n: ..." lines by number; a missing or useless one is filled from that part's own text
+      const byNumber = new Map<number, string>();
+      for (const raw of text.replace(/```[a-z]*/gi, '').split('\n')) {
+        const m = raw.replace(/\*+/g, '').trim().match(/^(?:shot\s*)?(\d+)\s*[.):\-]\s*(.+)$/i);
+        if (!m) continue;
+        const line = cleanPromptTags(depersonalise(m[2].replace(/["“”]/g, ''), String(protagonist)), 40).replace(/[.;:,]+$/, '');
+        if (line.split(/\s+/).length >= 4) byNumber.set(Number(m[1]), line);
+      }
+      const fromModel = parts.filter((_, i) => byNumber.has(i + 1)).length;
+      if (fromModel < Math.ceil(parts.length / 2)) {
+        console.warn(`Beat writer reply unusable (${fromModel} of ${parts.length} shots): ${JSON.stringify(text.slice(0, 220))}`);
+        return null;
+      }
+      return parts.map((part, i) => byNumber.get(i + 1) || offlineBeats(part, 1)[0] || part.slice(0, 120)).join('\n');
     }
   });
   if (written) return res.json({ beats: written.text.split('\n'), model: written.model });
