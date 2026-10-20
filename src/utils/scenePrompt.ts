@@ -152,7 +152,7 @@ export const composeFramePrompt = (beat: string, sceneText: string, look?: strin
     .map(p => p.replace(/[.,;\s]+$/, '')).filter(Boolean).join(', ');
 
 // Ask the server (Gemini, or a local model) to split the scene into short visual beats
-export const requestSceneBeats = async (args: { sceneText: string; recent: string[]; protagonist?: string; count: number }): Promise<string[]> => {
+export const requestSceneBeats = async (args: { sceneText: string; recent: string[]; protagonist?: string; count: number; modelName?: string }): Promise<string[]> => {
   const res = await fetch('/api/scene-beats', {
     method: 'POST',
     signal: AbortSignal.timeout(180000),
@@ -161,7 +161,8 @@ export const requestSceneBeats = async (args: { sceneText: string; recent: strin
       sceneText: stripMarkup(args.sceneText),
       recent: args.recent.map(t => stripMarkup(t).slice(0, 1200)),
       protagonist: args.protagonist ? stripMarkup(args.protagonist) : '',
-      count: args.count
+      count: args.count,
+      modelName: args.modelName || ''
     })
   });
   const body = await res.json().catch(() => ({}));
