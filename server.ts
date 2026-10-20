@@ -420,7 +420,7 @@ const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|henta
 
 // Story themes that no camera can see. Small models copy them out of the narration into the prompt,
 // where they only crowd out the tags that matter.
-const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency|network|logging|co-?processor|completion|begging|sobbing|weeping|exhausted|wrecked|broken/i;
+const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency|network|logging|co-?processor|completion|begging|sobbing|weeping|exhausted|wrecked|broken|writhing|thrashing/i;
 
 // Narration leaks "you"/"your" into prompts; an image model can't use them. Turn them into who they are.
 const depersonalise = (text: string, protagonist: string) => {
@@ -478,28 +478,32 @@ SETTING: cluttered garage, tools on a pegboard, oil stains, a bike on a stand
 CAMERA: wide shot, harsh overhead light`;
 
 // Same four fields, but written as Danbooru-style tags: Pony models read tags far better than sentences
-const PONY_SLOT_INSTRUCTION = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it as image tags for a Pony Diffusion model.
+const PONY_SLOT_INSTRUCTION = `You pick ONE shot from a scene of a Cyberpunk RED text roleplay and describe it as Danbooru tags for a Pony Diffusion model.
 
-Answer with exactly these four lines and nothing else. Every line is comma-separated Danbooru-style tags, not sentences:
-SUBJECTS: how many people and which sex (1boy, 1girl, 2girls...), then for each person an adult age such as "30 year old man", hair, build, and clothing or nude
+Answer with exactly these six lines and nothing else. Every line is comma-separated Danbooru tags: short (one to three words), real booru tags, never sentences:
+COUNT: how many people and which sex, as booru count tags, and how they relate
+CAMERA: the view angle and framing
 ACTION: the single pose or action happening in this moment, and who touches what
+PERSON1: the first person: an adult age such as "30 year old man", build, hair, face, clothing or nude
+PERSON2: the second person in the same way, or NONE
 SETTING: the place and its main objects
-CAMERA: how the shot is framed
 
 Rules:
 - Use only tags that are true of THIS shot. Never list several poses or sex positions: choose the one that matches the moment.
 - At most 2 people. Pick the single most visual moment; ignore the rest of the scene.
-- Leave out weapons, armour, gear and cyberware unless the shot is about them.
-- Tags for things a camera can see only: no feelings, themes, sounds, backstory or full sentences. Never write "you" or "your".
-- Show the scene faithfully, including violence or intimacy, without softening or adding to it. Name a sex act and its position with plain tags.
+- Leave out weapons, armour, gear and cyberware unless the shot is about them. Never use names or job titles.
+- Tags for things a camera can see only: no feelings, themes, sounds, backstory or story events. Never write "you" or "your".
+- Show the scene faithfully, including violence or intimacy, without softening or adding to it. Name a sex act and its position with its plain booru tag.
 - EVERY person is an adult: always include an adult age of 21 or more, even if the scene gives none. Never use girl, teen, young, little or petite to describe a person's age.
 
 Example (only shows the format; never reuse its people, places or words)
 SCENE: At the noodle stall the cook chops a duck while a customer waves a credit chip.
-SUBJECTS: 1boy, 1girl, 45 year old man, stocky, shaved head, apron, 32 year old woman, yellow raincoat
-ACTION: holding cleaver, chopping duck, customer holding credit chip, facing each other
-SETTING: night market, noodle stall, steam, paper lanterns
-CAMERA: cowboy shot, warm light`;
+COUNT: 1boy, 1girl
+CAMERA: cowboy shot, from side
+ACTION: holding cleaver, chopping, holding credit chip, facing another
+PERSON1: 45 year old man, stocky, shaved head, apron
+PERSON2: 32 year old woman, yellow raincoat
+SETTING: night market, noodle stall, steam`;
 
 // Slot mode (for small local models): the model only fills in four short fields and the code builds
 // the prompt around them, so it can't ramble or forget the quality tags.
@@ -507,10 +511,10 @@ const SLOT_LABELS = ['SUBJECTS', 'ACTION', 'SETTING', 'CAMERA'] as const;
 const parseSlots = (text: string): Record<string, string> | null => {
   const out: Record<string, string> = {};
   for (const raw of text.replace(/```[a-z]*/gi, '').split('\n')) {
-    const m = raw.replace(/\*+/g, '').match(/^\s*[-•]?\s*(SUBJECTS?|ACTION|SETTING|CAMERA)\s*[:\-]\s*(.+)$/i);
-    if (m) out[m[1].toUpperCase().replace(/^SUBJECT$/, 'SUBJECTS')] = m[2].replace(/["“”]/g, '').replace(/[.;]+$/, '').trim();
+    const m = raw.replace(/\*+/g, '').match(/^\s*[-•]?\s*(SUBJECTS?|ACTION|SETTING|CAMERA|COUNT|PERSON\s?1|PERSON\s?2)\s*[:\-]\s*(.+)$/i);
+    if (m) out[m[1].toUpperCase().replace(/\s/g, '').replace(/^SUBJECT$/, 'SUBJECTS')] = m[2].replace(/["“”]/g, '').replace(/[.;]+$/, '').trim();
   }
-  return out.SUBJECTS && out.ACTION ? out : null;
+  return out.ACTION && (out.SUBJECTS || out.PERSON1) ? out : null;
 };
 
 app.post('/api/scene-prompt', async (req, res) => {
@@ -581,8 +585,10 @@ ${sceneText.slice(0, 5000)}`;
         const action = firstTags(slots.ACTION || '', 6);
         const setting = firstTags(slots.SETTING || '', 5);
         const camera = firstTags(slots.CAMERA || '', 4);
+        // the Pony guide's order: count/relationship, composition, pose/action, primary character, secondary character, background
+        const person2 = /^none$/i.test((slots.PERSON2 || '').trim()) ? '' : firstTags(slots.PERSON2 || '', 8);
         const parts = isPony
-          ? [subjects, camera, action, setting] // the Pony guide's order: subjects, composition, action, background
+          ? [firstTags(slots.COUNT || '', 4), camera, action, firstTags(slots.PERSON1 || subjects, 8), person2, setting]
           : [subjects, action, setting, camera];
         const body0 = depersonalise(parts.filter(Boolean).join(', '), String(protagonist));
         const body = isPony ? tidyPonyTags(body0) : body0;

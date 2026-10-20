@@ -23,11 +23,20 @@ export const tidyPonyTags = (line: string): string => {
   const out: string[] = [];
   let positionKept = false;
   for (const raw of line.split(',')) {
-    const tag = raw.trim();
+    let tag = raw.trim();
     if (!tag) continue;
+    // Names are not tags. A capital after the first word is a name; a capitalised first word is sentence case
+    // ("Standing", "Kneeling on bed") unless it is a name doing something ("Elena trembling", "Tanaka on floor").
+    const caps = tag.match(/\b[A-Z][a-z]{2,}\b/g) || [];
+    if (caps.length) {
+      const first = tag.split(/\s+/)[0];
+      const nameDoing = /^[A-Z][a-z]+\s+(?:\w+ing|\w+ed|is|was|on|in|at|broken)\b/.test(tag) && !/(?:ing|ed)$/.test(first);
+      if (caps.length > 1 || !/^[A-Z]/.test(tag) || nameDoing) continue;
+      tag = tag.charAt(0).toLowerCase() + tag.slice(1);
+    }
     if (ROLE_TAG.test(tag)) continue;
-    if (/\s[A-Z][a-z]{2,}\b|^[A-Z][a-z]{2,}\s+(?:is|was|on|in|at|broken)\b/.test(tag)) continue; // a name: not something a camera sees
-    if (tag.split(/\s+/).length > 5) continue; // a sentence, not a tag
+    if (sexual && GEAR_TAG.test(tag)) continue;
+    if (tag.split(/\s+/).length > 4 && !/year old/i.test(tag)) continue; // Danbooru tags are short: this is a sentence
     if (sexual && GEAR_TAG.test(tag)) continue;
     if (POSITION_TAG.test(tag)) {
       if (positionKept) continue;
@@ -50,14 +59,17 @@ export const tidyPonyTags = (line: string): string => {
 };
 export const withPonyScore = (prompt: string, model?: string) => {
   if (!isPonyModel(model) || /score_9/i.test(prompt)) return prompt;
-  const rating = SEXUAL.test(prompt) && !/rating_/i.test(prompt) ? ', rating_explicit' : '';
+  // guide: rating tags steer how explicit the result is; no rating tag lets the model drift
+  const rating = /rating_/i.test(prompt) ? '' : SEXUAL.test(prompt) ? ', rating_explicit' : ', rating_safe';
   return `${PONY_SCORE_TAGS}${rating}, ${prompt}`;
 };
 export const withPonyNegative = (negative: string, model?: string, prompt = '') => {
   if (!isPonyModel(model) || /score_6/i.test(negative)) return negative;
-  // not a sexual scene: keep the model from drifting into nudity
-  const notExplicit = prompt && !SEXUAL.test(prompt) ? 'rating_explicit, ' : '';
-  return `${PONY_NEGATIVE_TAGS}, ${notExplicit}${PONY_NEGATIVE_EXTRA}, ${negative}`;
+  // not a sexual scene: SFW per the guide (rating_safe positive, both other ratings negative)
+  const notExplicit = prompt && !SEXUAL.test(prompt) ? 'rating_questionable, rating_explicit, ' : '';
+  // realistic checkpoints: push away from the stylised source_* slices
+  const realistic = /real|photo|cyber/i.test(model || '') ? 'source_anime, source_cartoon, source_furry, source_pony, ' : '';
+  return `${PONY_NEGATIVE_TAGS}, ${notExplicit}${realistic}${PONY_NEGATIVE_EXTRA}, ${negative}`;
 };
 
 export const DEFAULT_NEGATIVE_PROMPT = 'blurry, lowres, bad anatomy, bad hands, extra fingers, deformed, watermark, signature, text, jpeg artifacts';
