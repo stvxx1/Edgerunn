@@ -1,14 +1,25 @@
 
 // Deliberately setting-neutral: rain, neon and so on come from the scene itself, so an indoor scene doesn't get wet streets
 export const DEFAULT_STYLE_TAGS = 'cyberpunk, cinematic lighting, highly detailed, sharp focus';
-// Pony Diffusion models are trained on quality "score" tags: without them the output is poor
+// Pony Diffusion (SDXL) is trained on quality "score" tags that must come first; rating tags steer how
+// explicit the result is. Per the Pony prompting guide: score chain first, no "masterpiece/best quality".
 export const PONY_SCORE_TAGS = 'score_9, score_8_up, score_7_up';
 export const PONY_NEGATIVE_TAGS = 'score_6, score_5, score_4';
+// Pony's negative also keeps every figure adult-looking
+const PONY_NEGATIVE_EXTRA = 'text, censored, deformed, bad hand, child, loli, shota, young';
 export const isPonyModel = (name?: string) => /pony/i.test(name || '');
-export const withPonyScore = (prompt: string, model?: string) =>
-  isPonyModel(model) && !/score_9/i.test(prompt) ? `${PONY_SCORE_TAGS}, ${prompt}` : prompt;
-export const withPonyNegative = (negative: string, model?: string) =>
-  isPonyModel(model) && !/score_6/i.test(negative) ? `${PONY_NEGATIVE_TAGS}, ${negative}` : negative;
+const SEXUAL = /\b(sex|nude|naked|nipples?|pussy|vagina\w*|cock|penis|anal|oral|blowjob|topless|cum|cumshot|fellatio|missionary|cowgirl position|doggystyle|from behind)\b/i;
+export const withPonyScore = (prompt: string, model?: string) => {
+  if (!isPonyModel(model) || /score_9/i.test(prompt)) return prompt;
+  const rating = SEXUAL.test(prompt) && !/rating_/i.test(prompt) ? ', rating_explicit' : '';
+  return `${PONY_SCORE_TAGS}${rating}, ${prompt}`;
+};
+export const withPonyNegative = (negative: string, model?: string, prompt = '') => {
+  if (!isPonyModel(model) || /score_6/i.test(negative)) return negative;
+  // not a sexual scene: keep the model from drifting into nudity
+  const notExplicit = prompt && !SEXUAL.test(prompt) ? 'rating_explicit, ' : '';
+  return `${PONY_NEGATIVE_TAGS}, ${notExplicit}${PONY_NEGATIVE_EXTRA}, ${negative}`;
+};
 
 export const DEFAULT_NEGATIVE_PROMPT = 'blurry, lowres, bad anatomy, bad hands, extra fingers, deformed, watermark, signature, text, jpeg artifacts';
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ImageIcon, X, Loader2, RotateCcw, Cpu, Cloud, Film } from 'lucide-react';
 import { HUDState } from '../types';
-import { buildScenePrompt, requestScenePrompt, requestSceneBeats, offlineBeats, composeFramePrompt, describePromptFallback, withPonyScore, withPonyNegative, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
+import { buildScenePrompt, requestScenePrompt, requestSceneBeats, offlineBeats, composeFramePrompt, describePromptFallback, withPonyScore, withPonyNegative, isPonyModel, DEFAULT_NEGATIVE_PROMPT } from '../utils/scenePrompt';
 import { describeCharacterLook } from '../utils/characterLook';
 import { ImageBackend, SceneImageRequest } from '../utils/useSceneImages';
 
@@ -148,6 +148,15 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
     writePrompt(false);
   }, [messageId]);
 
+  // Pony models want tag-style prompts: rewrite when the model switches to or from one (unless you edited it)
+  const ponyNow = isPonyModel(settings.models[settings.backend]);
+  const wasPony = useRef(ponyNow);
+  useEffect(() => {
+    if (wasPony.current === ponyNow) return;
+    wasPony.current = ponyNow;
+    if (!userEdited.current) writePrompt(false);
+  }, [ponyNow]);
+
   const update = (patch: Partial<VisualiserSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
@@ -166,7 +175,7 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
         messageId,
         backend: settings.backend,
         prompt: withPonyScore(prompt, model),
-        negativePrompt: withPonyNegative(settings.negativePrompt, model),
+        negativePrompt: withPonyNegative(settings.negativePrompt, model, prompt),
         model: model || undefined,
         nsfw: settings.nsfw,
         width,
@@ -223,7 +232,7 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           messageId,
           backend: settings.backend,
           prompt: withPonyScore(composeFramePrompt(beats[frame], sceneText, characterLook), model),
-          negativePrompt: withPonyNegative(settings.negativePrompt, model),
+          negativePrompt: withPonyNegative(settings.negativePrompt, model, (beats || []).join(' ')),
           model: model || undefined,
           nsfw: settings.nsfw,
           width,
@@ -319,6 +328,16 @@ export const SceneVisualiser: React.FC<SceneVisualiserProps> = ({ messageId, sce
           className="mb-3 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-2 font-sans text-xs text-neutral-400 focus:border-fuchsia-500 focus:outline-none"
         />
 
+        {isPonyModel(model) && (
+          <button
+            type="button"
+            onClick={() => update({ steps: 30, cfg: 6, sampler: 'dpmpp_sde', clipSkip: 2, aspect: isLocal ? 'portrait-sdxl' : 'portrait-xl' })}
+            className="mb-3 w-full rounded border border-neutral-700 bg-neutral-900 py-1.5 text-[11px] text-neutral-300 transition hover:border-fuchsia-500 hover:text-fuchsia-300"
+            title="From the Pony prompting guide: 30 steps, CFG 6, DPM++ SDE Karras, clip skip 2, 832 wide"
+          >
+            🐴 PONY PRESET: 30 steps · CFG 6 · DPM++ SDE · clip skip 2 · SDXL frame
+          </button>
+        )}
         {isLocal && (
           <button
             type="button"
