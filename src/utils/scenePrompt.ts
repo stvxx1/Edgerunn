@@ -8,13 +8,16 @@ export const PONY_NEGATIVE_TAGS = 'score_6, score_5, score_4';
 // Pony's negative also keeps every figure adult-looking
 const PONY_NEGATIVE_EXTRA = 'text, censored, deformed, bad hand, child, loli, shota, young';
 export const isPonyModel = (name?: string) => /pony/i.test(name || '');
-const SEXUAL = /\b(sex|nude|naked|nipples?|pussy|vagina\w*|cock|penis|anal|oral|blowjob|topless|cum|cumshot|fellatio|missionary|cowgirl position|doggystyle|from behind)\b/i;
+const SEXUAL = /\b(sex|sexual|nude|naked|nipples?|breasts?|pussy|vagina\w*|cock|penis|anal|oral|blowjob|topless|cum|cumshot|fellatio|missionary|cowgirl position|doggystyle|penetrat\w*|thrust\w*|intercourse|ejaculat\w*|orgasm\w*|fuck\w*|rape\w*)\b/i;
 // Small models copy whatever they were shown and stack incompatible tags. This keeps one sex position,
 // drops gear that has no place in an intimate shot, and makes sure the people-count tags exist.
 const POSITION_TAG = /^(missionary|cowgirl position|reverse cowgirl|doggystyle|prone bone|spooning|standing sex|mating press|bent over|girl on top|boy on top|sex from behind|from behind)$/i;
 // A job title is not something a camera sees
 const ROLE_TAG = /^(corporate executive|executive|street mercenary|mercenary|netrunner|street techie|techie|medic|street fixer|fixer|road nomad|nomad|journalist|lawman|rockerboy)$/i;
 const GEAR_TAG = /\b(smg|rifle|pistol|shotgun|gun|armed|weapon|armor|armour|kevlar|jacket|holster|blade|grenade)\b/i;
+// Keep only the first `n` tags of a comma list (small models ramble)
+export const firstTags = (line: string, n: number) => line.split(',').map(t => t.trim()).filter(Boolean).slice(0, n).join(', ');
+
 export const tidyPonyTags = (line: string): string => {
   const sexual = SEXUAL.test(line);
   const out: string[] = [];
@@ -23,6 +26,8 @@ export const tidyPonyTags = (line: string): string => {
     const tag = raw.trim();
     if (!tag) continue;
     if (ROLE_TAG.test(tag)) continue;
+    if (/\s[A-Z][a-z]{2,}\b|^[A-Z][a-z]{2,}\s+(?:is|was|on|in|at|broken)\b/.test(tag)) continue; // a name: not something a camera sees
+    if (tag.split(/\s+/).length > 5) continue; // a sentence, not a tag
     if (sexual && GEAR_TAG.test(tag)) continue;
     if (POSITION_TAG.test(tag)) {
       if (positionKept) continue;
@@ -36,6 +41,9 @@ export const tidyPonyTags = (line: string): string => {
   const add: string[] = [];
   if (women && !out.some(t => /^\d+girls?$/i.test(t))) add.push(`${women}girl${women > 1 ? 's' : ''}`);
   if (men && !out.some(t => /^\d+boys?$/i.test(t))) add.push(`${men}boy${men > 1 ? 's' : ''}`);
+  // plural "women" / "men" with no explicit age: assume a pair, so the count tag still exists
+  if (!women && /\bwomen\b/i.test(line) && !out.some(t => /^\d+girls?$/i.test(t))) add.push('2girls');
+  if (!men && /\bmen\b/i.test(line) && !out.some(t => /^\d+boys?$/i.test(t))) add.push('2boys');
   if (men && women && !out.some(t => /^hetero$/i.test(t))) add.push('hetero');
   out.unshift(...add);
   return out.join(', ');

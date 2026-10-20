@@ -1,4 +1,4 @@
-import { withPonyScore, offlineBeats, tidyPonyTags } from './src/utils/scenePrompt';
+import { withPonyScore, offlineBeats, tidyPonyTags, firstTags } from './src/utils/scenePrompt';
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -420,7 +420,7 @@ const ANIME_MODEL = /anime|anything|counterfeit|abyss|illustrious|pony|wai|henta
 
 // Story themes that no camera can see. Small models copy them out of the narration into the prompt,
 // where they only crowd out the tags that matter.
-const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency/i;
+const NON_VISUAL_TAG = /^intense\b|psycholog|trauma|emotional|power dynamic|manipulat|degradation|humiliation|objectif|fetishis|sadis|ritual|subjugat|dominance|submission|surrender|ecstatic|delirium|dependency|network|logging|co-?processor|completion|begging|sobbing|weeping|exhausted|wrecked|broken/i;
 
 // Narration leaks "you"/"your" into prompts; an image model can't use them. Turn them into who they are.
 const depersonalise = (text: string, protagonist: string) => {
@@ -576,13 +576,18 @@ ${sceneText.slice(0, 5000)}`;
       // Slot answer (labelled fields): build the prompt around them
       const slots = parseSlots(text);
       if (slots) {
+        // Small models dump the whole scene into the fields: keep only the first few tags of each
+        const subjects = firstTags(slots.SUBJECTS || '', 14);
+        const action = firstTags(slots.ACTION || '', 6);
+        const setting = firstTags(slots.SETTING || '', 5);
+        const camera = firstTags(slots.CAMERA || '', 4);
         const parts = isPony
-          ? [slots.SUBJECTS, slots.CAMERA, slots.ACTION, slots.SETTING] // the Pony guide's order: subjects, composition, action, background
-          : [slots.SUBJECTS, slots.ACTION, slots.SETTING, slots.CAMERA];
+          ? [subjects, camera, action, setting] // the Pony guide's order: subjects, composition, action, background
+          : [subjects, action, setting, camera];
         const body0 = depersonalise(parts.filter(Boolean).join(', '), String(protagonist));
         const body = isPony ? tidyPonyTags(body0) : body0;
         const styleFront = isPony ? (/real|photo|cyber/i.test(String(modelName)) ? 'realistic, ' : 'source_anime, ') : '';
-        const built = cleanPromptTags(`${styleFront}${body}, ${closingTags}`, 90);
+        const built = cleanPromptTags(`${styleFront}${body}, ${closingTags}`, 200); // the caps above bound the length; never cut the closing tags
         return built.length > 20 ? withScore(built) : null;
       }
       if (slotMode) {
