@@ -8,21 +8,35 @@ export const PONY_NEGATIVE_TAGS = 'score_6, score_5, score_4';
 // Pony's negative also keeps every figure adult-looking
 const PONY_NEGATIVE_EXTRA = 'text, censored, deformed, bad hand, child, loli, shota, young';
 export const isPonyModel = (name?: string) => /pony/i.test(name || '');
-const SEXUAL = /\b(sex|nude|naked|nipples?|pussy|vagina\w*|cock|penis|anal|oral|blowjob|topless|cum|cumshot|fellatio|missionary|cowgirl position|doggystyle|from behind)\b/i;
+const SEXUAL = /\b(sex|sexual|nude|naked|nipples?|breasts?|pussy|vagina\w*|cock|penis|anal|oral|blowjob|topless|cum|cumshot|fellatio|missionary|cowgirl position|doggystyle|penetrat\w*|thrust\w*|intercourse|ejaculat\w*|orgasm\w*|fuck\w*|rape\w*)\b/i;
 // Small models copy whatever they were shown and stack incompatible tags. This keeps one sex position,
 // drops gear that has no place in an intimate shot, and makes sure the people-count tags exist.
 const POSITION_TAG = /^(missionary|cowgirl position|reverse cowgirl|doggystyle|prone bone|spooning|standing sex|mating press|bent over|girl on top|boy on top|sex from behind|from behind)$/i;
 // A job title is not something a camera sees
 const ROLE_TAG = /^(corporate executive|executive|street mercenary|mercenary|netrunner|street techie|techie|medic|street fixer|fixer|road nomad|nomad|journalist|lawman|rockerboy)$/i;
 const GEAR_TAG = /\b(smg|rifle|pistol|shotgun|gun|armed|weapon|armor|armour|kevlar|jacket|holster|blade|grenade)\b/i;
+// Keep only the first `n` tags of a comma list (small models ramble)
+export const firstTags = (line: string, n: number) => line.split(',').map(t => t.trim()).filter(Boolean).slice(0, n).join(', ');
+
 export const tidyPonyTags = (line: string): string => {
   const sexual = SEXUAL.test(line);
   const out: string[] = [];
   let positionKept = false;
   for (const raw of line.split(',')) {
-    const tag = raw.trim();
+    let tag = raw.trim();
     if (!tag) continue;
+    // Names are not tags. A capital after the first word is a name; a capitalised first word is sentence case
+    // ("Standing", "Kneeling on bed") unless it is a name doing something ("Elena trembling", "Tanaka on floor").
+    const caps = tag.match(/\b[A-Z][a-z]{2,}\b/g) || [];
+    if (caps.length) {
+      const first = tag.split(/\s+/)[0];
+      const nameDoing = /^[A-Z][a-z]+\s+(?:\w+ing|\w+ed|is|was|on|in|at|broken)\b/.test(tag) && !/(?:ing|ed)$/.test(first);
+      if (caps.length > 1 || !/^[A-Z]/.test(tag) || nameDoing) continue;
+      tag = tag.charAt(0).toLowerCase() + tag.slice(1);
+    }
     if (ROLE_TAG.test(tag)) continue;
+    if (sexual && GEAR_TAG.test(tag)) continue;
+    if (tag.split(/\s+/).length > 4 && !/year old/i.test(tag)) continue; // Danbooru tags are short: this is a sentence
     if (sexual && GEAR_TAG.test(tag)) continue;
     if (POSITION_TAG.test(tag)) {
       if (positionKept) continue;
@@ -36,20 +50,26 @@ export const tidyPonyTags = (line: string): string => {
   const add: string[] = [];
   if (women && !out.some(t => /^\d+girls?$/i.test(t))) add.push(`${women}girl${women > 1 ? 's' : ''}`);
   if (men && !out.some(t => /^\d+boys?$/i.test(t))) add.push(`${men}boy${men > 1 ? 's' : ''}`);
+  // plural "women" / "men" with no explicit age: assume a pair, so the count tag still exists
+  if (!women && /\bwomen\b/i.test(line) && !out.some(t => /^\d+girls?$/i.test(t))) add.push('2girls');
+  if (!men && /\bmen\b/i.test(line) && !out.some(t => /^\d+boys?$/i.test(t))) add.push('2boys');
   if (men && women && !out.some(t => /^hetero$/i.test(t))) add.push('hetero');
   out.unshift(...add);
   return out.join(', ');
 };
 export const withPonyScore = (prompt: string, model?: string) => {
   if (!isPonyModel(model) || /score_9/i.test(prompt)) return prompt;
-  const rating = SEXUAL.test(prompt) && !/rating_/i.test(prompt) ? ', rating_explicit' : '';
+  // guide: rating tags steer how explicit the result is; no rating tag lets the model drift
+  const rating = /rating_/i.test(prompt) ? '' : SEXUAL.test(prompt) ? ', rating_explicit' : ', rating_safe';
   return `${PONY_SCORE_TAGS}${rating}, ${prompt}`;
 };
 export const withPonyNegative = (negative: string, model?: string, prompt = '') => {
   if (!isPonyModel(model) || /score_6/i.test(negative)) return negative;
-  // not a sexual scene: keep the model from drifting into nudity
-  const notExplicit = prompt && !SEXUAL.test(prompt) ? 'rating_explicit, ' : '';
-  return `${PONY_NEGATIVE_TAGS}, ${notExplicit}${PONY_NEGATIVE_EXTRA}, ${negative}`;
+  // not a sexual scene: SFW per the guide (rating_safe positive, both other ratings negative)
+  const notExplicit = prompt && !SEXUAL.test(prompt) ? 'rating_questionable, rating_explicit, ' : '';
+  // realistic checkpoints: push away from the stylised source_* slices
+  const realistic = /real|photo|cyber/i.test(model || '') ? 'source_anime, source_cartoon, source_furry, source_pony, ' : '';
+  return `${PONY_NEGATIVE_TAGS}, ${notExplicit}${realistic}${PONY_NEGATIVE_EXTRA}, ${negative}`;
 };
 
 export const DEFAULT_NEGATIVE_PROMPT = 'blurry, lowres, bad anatomy, bad hands, extra fingers, deformed, watermark, signature, text, jpeg artifacts';
